@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trilingual input prototype</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#6b7280; --card:#fff; --acc:#2563eb; --zh:#d97706; --en:#2563eb; --sv:#059669; --llm:#7c3aed; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 880px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  #out { min-height: 160px; background: var(--card); border: 1px solid #d0d5dd; border-radius: 8px; padding: 14px 16px; font-size: 20px; line-height: 1.6; white-space: pre-wrap; outline: none; cursor: text; }
+  #out:focus { border-color: var(--acc); box-shadow: 0 0 0 3px #2563eb22; }
+  .caret { display:inline-block; width:2px; height:1.2em; background:var(--fg); vertical-align:-3px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0 } }
+  #comp { display:inline; border-bottom: 2px solid var(--acc); color: var(--acc); }
+  #ghost { color: #9ca3af; }
+  #ghost .u1 { text-decoration: underline dotted; }
+  #bar { margin-top: 10px; background: var(--card); border: 1px solid #d0d5dd; border-radius: 8px; padding: 8px 12px; min-height: 40px; display:flex; flex-wrap:wrap; gap: 6px 14px; align-items:center; font-size: 18px; }
+  .cand { padding: 2px 6px; border-radius: 6px; cursor:pointer; }
+  .cand.sel { background: #2563eb18; }
+  .cand small { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  .tag { font-size: 10px; padding: 0 5px; border-radius: 8px; color:#fff; vertical-align: middle; margin-left: 4px; }
+  .tag.zh{background:var(--zh)} .tag.en{background:var(--en)} .tag.sv{background:var(--sv)} .tag.llm{background:var(--llm)} .tag.raw{background:#6b7280} .tag.learned{background:#db2777}
+  #learn button { font: inherit; font-size: 12px; padding: 2px 8px; margin-left: 6px; }
+  #meta { display:flex; gap: 18px; margin-top: 8px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .prob { display:inline-block; min-width: 60px; }
+  .prob b { color: var(--fg); }
+  label { user-select:none; }
+  .help { margin-top: 18px; font-size: 13px; color: var(--muted); }
+  kbd { background:#e5e7eb; border-radius:4px; padding:0 5px; font-family: inherit; color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>中 / English / Svenska — one input, no switching</h1>
+  <div class="sub">Standalone prototype. Click the box and type pinyin, English or Swedish. Nothing here is registered with Windows.</div>
+  <div id="out" tabindex="0"></div>
+  <div id="bar"><span style="color:var(--muted);font-size:13px">candidates appear here</span></div>
+  <div id="meta">
+    <span>lang: <span id="probs"></span></span>
+    <span id="timing"></span>
+    <label><input type="checkbox" id="usellm" checked> use local LLM (<span id="llmname">checking…</span>)</label>
+    <label><input type="checkbox" id="autospace" checked> auto space after Latin words</label>
+    <label><input type="checkbox" id="predict" checked> predict ahead (<kbd>Tab</kbd> accepts)</label>
+  </div>
+  <div id="learn" style="margin-top:6px;font-size:13px;color:var(--muted)"></div>
+  <div class="help">
+    <kbd>Space</kbd> commits candidate 1 · <kbd>1</kbd>–<kbd>9</kbd> pick · <kbd>Tab</kbd> accepts the next predicted word (grey) · <kbd>Enter</kbd> commits what you typed verbatim ·
+    <kbd>Esc</kbd> clears · <kbd>ä</kbd> <kbd>ö</kbd> <kbd>å</kbd> keys work as Swedish letters — also as <kbd>'</kbd> <kbd>;</kbd> <kbd>[</kbd> under the US layout
+    (<kbd>Enter</kbd> commits the literal keys, e.g. don't) · punctuation follows the previous word
+    (，。after Chinese, , . after Latin) · <kbd>Shift</kbd>+letter starts a verbatim word (names, commands).
+  </div>
+</div>
+<script>
+const out = document.getElementById('out'), bar = document.getElementById('bar');
+const probsEl = document.getElementById('probs'), timingEl = document.getElementById('timing');
+let text = '', comp = '', rawComp = '', cands = [], sel = 0, svHint = false, verbatim = false, seq = 0, timer = null;
+const SID = Math.random().toString(36).slice(2);   // per page load: server-side stale checks are keyed by it
+const CJK = /[一-鿿]/;
+// Swedish letters: real å/ä/ö keys, plus the same physical keys under the US layout
+const NORDIC = {'å':'å','ä':'ä','ö':'ö','Å':'Å','Ä':'Ä','Ö':'Ö', "'":'ä', ';':'ö', '[':'å', '"':'Ä', ':':'Ö', '{':'Å'};
+const FULL = {',':'，','.':'。','?':'？','!':'！',':':'：',';':'；','(':'（',')':'）'};
+
+function render() {
+  out.innerHTML = '';
+  out.appendChild(document.createTextNode(text));
+  if (comp) { const c = document.createElement('span'); c.id = 'comp'; c.textContent = comp; out.appendChild(c); }
+  const caret = document.createElement('span'); caret.className = 'caret'; out.appendChild(caret);
+  if (!comp && ghost.length) {
+    const g = document.createElement('span'); g.id = 'ghost';
+    const u1 = document.createElement('span'); u1.className = 'u1'; u1.textContent = ghost[0]; g.appendChild(u1);
+    g.appendChild(document.createTextNode(ghost.slice(1).join('')));
+    out.appendChild(g);
+  }
+  bar.innerHTML = '';
+  if (!comp) { bar.innerHTML = '<span style="color:var(--muted);font-size:13px">candidates appear here</span>'; return; }
+  if (verbatim) { bar.innerHTML = `<span style="color:var(--muted);font-size:13px">verbatim word "${rawComp}" — Space or Enter to commit</span>`; return; }
+  cands.forEach((c, i) => {
+    const d = document.createElement('span'); d.className = 'cand' + (i === sel ? ' sel' : '');
+    d.innerHTML = `<small>${i + 1}</small>${c.text}<span class="tag ${c.lang}">${c.lang}</span>` +
+      (c.source === 'llm' ? '<span class="tag llm">LLM</span>' : '') + (c.source === 'raw' ? '<span class="tag raw">raw</span>' : '') +
+      (c.source === 'learned' ? '<span class="tag learned">★</span>' : '');
+    d.title = c.llm !== undefined ? `LLM logp ${c.llm}  score ${c.score?.toFixed(2)}` : c.source;
+    d.onclick = () => commit(i);
+    bar.appendChild(d);
+  });
+}
+
+let inflight = null;
+async function refresh() {
+  const my = ++seq;
+  timer = null;
+  if (!comp || verbatim) { cands = []; render(); return; }
+  const p = (async () => {
+    const r = await fetch('/compose', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ input: comp, raw: rawComp, context: text, sv_hint: svHint, seq: my, sid: SID, use_llm: document.getElementById('usellm').checked }) });
+    const j = await r.json();
+    if (my !== seq) return;               // stale (newer keystroke or a commit happened)
+    cands = j.candidates; sel = 0; lastProbs = j.probs; lastPrimary = j.primary;
+    probsEl.innerHTML = ['zh','en','sv'].map(k => `<span class="prob">${k} <b>${Math.round((j.probs[k]||0)*100)}%</b></span>`).join('');
+    timingEl.textContent = `fast ${j.fast_ms} ms` + (j.llm_used ? ` · LLM ${j.llm_ms} ms` : (j.llm_ms < 0 ? ' · LLM error' : ''));
+    render();
+  })();
+  inflight = p;
+  await p;
+}
+function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 60); }
+// before committing, make sure the candidates match what was typed
+async function ensureFresh() {
+  if (timer) { clearTimeout(timer); timer = null; await refresh(); return; }
+  if (inflight) { await Promise.race([inflight, new Promise(r => setTimeout(r, 1500))]); }
+}
+
+function insert(s) { text += s; }
+function clearComp() { comp = ''; rawComp = ''; cands = []; svHint = false; verbatim = false; seq++; schedulePredict(); }
+let lastProbs = {}, lastPrimary = null, autoSpaced = false;
+function autoSpace() { if (autosp()) { insert(' '); autoSpaced = true; } }
+function commit(i) {
+  const ctxBefore = text;
+  if (verbatim) { insert(rawComp); autoSpace(); learn({text: rawComp, lang: 'en', index: -1, source: 'verbatim'}, ctxBefore); }
+  else if (cands[i]) {
+    const c = cands[i];
+    // Chinese follows Latin without a space: drop the space we added automatically
+    if (c.lang === 'zh' && autoSpaced && text.endsWith(' ')) text = text.slice(0, -1);
+    insert(c.text); autoSpaced = false;
+    if (c.lang !== 'zh') autoSpace();
+    learn({text: c.text, lang: c.lang, index: i, source: c.source}, ctxBefore);
+  } else { insert(rawComp); autoSpace(); }
+  clearComp(); render();
+}
+// ---- learning from what the user picks
+const learnEl = document.getElementById('learn');
+function learn(sel, ctxBefore) {
+  fetch('/select', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ ...sel, input: comp, raw: rawComp, context: ctxBefore.slice(-200), primary: lastPrimary,
+                           shown: cands.slice(0, 5).map(c => c.text) }) })
+    .then(r => r.json()).then(showLearning).catch(() => {});
+}
+function showLearning(s) {
+  if (!s) return;
+  const pct = Math.min(100, Math.round(100 * Math.max(s.informative_since_retrain / s.thresholds.informative, s.since_retrain / s.thresholds.total)));
+  let html = `learned ${s.total} selections (${s.informative} corrections) · ${pct}% to next retrain`;
+  if (s.retrain_status === 'running') html += ' · <b>retraining…</b>';
+  else if (s.suggest_retrain) html += ` · <b>enough new data</b> <button id="retrainBtn">Retrain model now</button>`;
+  else if (s.retrain_status === 'done' && s.last_retrain) html += ' · model retrained ✓';
+  else if (s.retrain_status === 'failed') html += ' · <span style="color:#b91c1c">retrain failed (see server log)</span>';
+  learnEl.innerHTML = html;
+  const b = document.getElementById('retrainBtn');
+  if (b) b.onclick = () => { fetch('/retrain', {method: 'POST'}).then(r => r.json()).then(showLearning); pollRetrain(); };
+}
+// ---- predict ahead (ghost text, Tab accepts one unit)
+let ghost = [], predSeq = 0, predTimer = null;
+function schedulePredict(delay = 250) {
+  clearTimeout(predTimer);
+  if (!document.getElementById('predict').checked) { ghost = []; return; }
+  predTimer = setTimeout(async () => {
+    const my = ++predSeq;
+    if (comp) return;
+    try {
+      const r = await fetch('/predict', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ context: text, seq: my, sid: SID }) });
+      const j = await r.json();
+      if (my !== predSeq || comp) return;
+      ghost = j.units || [];
+      render();
+    } catch (e) {}
+  }, delay);
+}
+function clearGhost() { ghost = []; predSeq++; clearTimeout(predTimer); }
+function acceptGhost() {
+  if (!ghost.length) return false;
+  let u = ghost.shift();
+  // spacing: a Latin unit needs a space after Latin text, none after Chinese
+  if (/^[A-Za-zÅÄÖåäö]/.test(u) && /[A-Za-zÅÄÖåäö0-9]$/.test(text)) u = ' ' + u;
+  if (/^\s/.test(u) && (CJK.test(text.slice(-1)) || text === '' || /\s$/.test(text))) u = u.trimStart();
+  insert(u); autoSpaced = false;
+  if (!ghost.length) schedulePredict(50);
+  render();
+  return true;
+}
+function pollRetrain() {
+  const t = setInterval(() => fetch('/learning').then(r => r.json()).then(s => { showLearning(s); if (s.retrain_status !== 'running') clearInterval(t); }), 3000);
+}
+function autosp() { return document.getElementById('autospace').checked; }
+function lastIsCJK() { const m = text.trimEnd(); return CJK.test(m.slice(-1)); }
+
+// keys are handled strictly one after another so an awaited lookup can never
+// interleave with the next keystroke
+let chain = Promise.resolve();
+out.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  if (k === 'Shift') return;
+  e.preventDefault();
+  chain = chain.then(() => handle(k)).catch(err => console.error(err));
+});
+async function handle(k) {
+  if (k === 'Tab') { if (!comp) acceptGhost(); return; }
+  if (k !== 'Tab') clearGhost();
+  if (k === 'Escape') { clearComp(); render(); return; }
+  if (k === 'Backspace') {
+    if (comp) { comp = comp.slice(0, -1); rawComp = rawComp.slice(0, -1); if (!comp) clearComp(); else schedule(); }
+    else text = text.slice(0, -1);
+    render(); return;
+  }
+  if (k === 'Enter') { if (comp) { insert(rawComp); if (autosp()) insert(' '); clearComp(); } else { insert('\n'); schedulePredict(); } render(); return; }
+  if (k === ' ') { if (comp) { if (!verbatim) await ensureFresh(); commit(sel); } else { insert(' '); autoSpaced = false; schedulePredict(); } render(); return; }
+  if (/^[1-9]$/.test(k) && comp && !verbatim) { await ensureFresh(); commit(parseInt(k) - 1); return; }
+  if (k === 'ArrowRight' || k === 'ArrowDown') { if (cands.length) { sel = (sel + 1) % cands.length; render(); } return; }
+  if (k === 'ArrowLeft' || k === 'ArrowUp') { if (cands.length) { sel = (sel - 1 + cands.length) % cands.length; render(); } return; }
+  if (k.length !== 1) return;
+  if (/[a-zA-Z]/.test(k)) {
+    if (!comp && /[A-Z]/.test(k)) verbatim = true;
+    comp += k; rawComp += k; schedule(); render(); return;
+  }
+  if (NORDIC[k] !== undefined) {
+    // ' ; [ are the ä ö å keys of a Swedish keyboard under the US layout.
+    // The literal key is kept in rawComp (Enter commits it verbatim, e.g. don't).
+    if (!comp && /[A-Z]/.test(NORDIC[k])) verbatim = true;
+    comp += NORDIC[k]; rawComp += k; svHint = true;
+    if (!verbatim) schedule();
+    render(); return;
+  }
+  // punctuation / digits / others
+  if (comp) { if (!verbatim) await ensureFresh(); commit(sel); }
+  if (FULL[k] && lastIsCJK()) { text = text.replace(/ $/, ''); insert(FULL[k]); }
+  else { if (/[,.?!:;)]/.test(k)) text = text.replace(/ $/, ''); insert(k); }
+  schedulePredict();
+  render();
+}
+out.addEventListener('click', () => out.focus());
+fetch('/status').then(r => r.json()).then(j => {
+  document.getElementById('llmname').textContent = j.llm ? `${j.model} on ${j.device_desc || j.device}` : 'not running';
+  showLearning(j.learning);
+});
+render(); out.focus();
+</script>
+</body>
+</html>

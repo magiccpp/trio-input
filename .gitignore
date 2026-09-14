@@ -1,0 +1,23 @@
+# virtual environments
+train/.venv/
+llm/.venv/
+.venv/
+__pycache__/
+*.pyc
+
+# model weights (downloaded by install.ps1 from the GitHub release)
+llm/models/
+
+# runtime state
+engine/user/build/
+engine/user/*.userdb/
+engine/user/installation.yaml
+engine/user/user.yaml
+engine/log/
+proto/data/
+llm/pip_torch.log
+*.log
+
+# scratch
+llm/mem_probe*.py
+.claude/

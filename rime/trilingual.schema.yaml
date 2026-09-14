@@ -1,0 +1,126 @@
+# Rime schema: 中/EN/SV automatic language detection
+# encoding: utf-8
+
+schema:
+  schema_id: trilingual
+  name: 中英瑞 自动
+  version: "1.0"
+  author:
+    - generated with Claude Code
+  description: |
+    Type pinyin, English or Swedish without switching. A small character
+    n-gram model (lua/langid_model.lua) ranks the candidates.
+  dependencies:
+    - en_words
+    - sv_words
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 自动, 英文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: simplification
+    reset: 1
+    states: [ 漢字, 汉字 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
+
+engine:
+  processors:
+    - lua_processor@*trilingual_keys
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - script_translator
+    - table_translator@en_words
+    - table_translator@sv_words
+  filters:
+    - simplifier
+    - lua_filter@*trilingual_rank
+    - uniquifier
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
+  delimiter: " '"
+  algebra:
+    - erase/^xx$/
+    - derive/^([nl])ue$/$1ve/
+    - derive/^([jqxy])u/$1v/
+    - abbrev/^([a-z]).+$/$1/
+    - abbrev/^([zcs]h).+$/$1/
+
+translator:
+  dictionary: luna_pinyin
+  enable_completion: true
+  enable_sentence: true
+  enable_user_dict: true
+  initial_quality: 1.0
+  preedit_format:
+    - xform/([nl])v/$1ü/
+    - xform/([nl])ue/$1üe/
+    - xform/([jqxy])v/$1u/
+
+en_words:
+  dictionary: en_words
+  enable_completion: true
+  enable_sentence: false
+  enable_user_dict: false
+  enable_encoder: false
+  encode_commit_history: false
+  initial_quality: 1.0
+  comment_format:
+    - xform/.*//
+
+sv_words:
+  dictionary: sv_words
+  enable_completion: true
+  enable_sentence: false
+  enable_user_dict: false
+  enable_encoder: false
+  encode_commit_history: false
+  initial_quality: 1.0
+  comment_format:
+    - xform/.*//
+
+trilingual:
+  # show "en 87%" style label on the first candidate (debugging aid)
+  show_confidence: false
+
+simplifier:
+  option_name: simplification
+  opencc_config: t2s.json
+
+ascii_composer:
+  good_old_caps_lock: true
+  switch_key:
+    Shift_L: commit_code
+    Shift_R: commit_code
+    Caps_Lock: clear
+    Control_L: noop
+    Control_R: noop
+
+punctuator:
+  import_preset: default
+
+key_binder:
+  import_preset: default
+
+recognizer:
+  import_preset: default
+  patterns:
+    email: "^[A-Za-z][-_.0-9A-Za-z]*@.*$"
+    url: "^(www[.]|https?:|ftp[.:]|mailto:|file:).*$|^[a-z]+[.].+$"

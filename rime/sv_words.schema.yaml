@@ -1,0 +1,21 @@
+# helper schema so that sv_words.dict.yaml gets compiled
+schema:
+  schema_id: sv_words
+  name: Svenska ord (helper)
+  version: "1"
+
+engine:
+  processors: [ ascii_composer, key_binder, speller, recognizer, selector, navigator, express_editor ]
+  segmentors: [ matcher, ascii_segmentor, abc_segmentor, punct_segmentor, fallback_segmentor ]
+  translators: [ table_translator ]
+  filters: [ uniquifier ]
+
+speller:
+  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA
+  delimiter: " '"
+
+translator:
+  dictionary: sv_words
+  enable_completion: true
+  enable_sentence: false
+  enable_user_dict: false
