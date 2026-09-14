@@ -222,8 +222,9 @@ def convert(context: str, pinyin: str, n: int = 3) -> list[str]:
 
 
 @torch.inference_mode()
-def predict(context: str, max_new_tokens: int = 10) -> str:
-    """Greedy continuation of the text so far (mixed zh/en/sv), one line at most."""
+def predict(context: str, max_new_tokens: int = 10, keep_lines: bool = False) -> str:
+    """Greedy continuation of the text so far (mixed zh/en/sv), one line at most
+    (keep_lines=True returns the raw multi-line continuation for the caller to parse)."""
     context = context[-400:].rstrip()      # a trailing space belongs to the next token
     if not context:
         return ""
@@ -231,6 +232,8 @@ def predict(context: str, max_new_tokens: int = 10) -> str:
     gen = model.generate(**ids, max_new_tokens=max_new_tokens, do_sample=False,
                          repetition_penalty=1.15, pad_token_id=tok.pad_token_id)
     text = tok.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
+    if keep_lines:
+        return text
     # after a mixed-language line the model sometimes starts a new paragraph first;
     # take the first non-empty line it produces
     text = text.lstrip("\n").split("\n")[0]
@@ -267,7 +270,7 @@ class H(BaseHTTPRequestHandler):
             elif self.path == "/convert":
                 res = {"candidates": convert(req.get("context", ""), req["pinyin"], int(req.get("n", 3)))}
             elif self.path == "/predict":
-                res = {"text": predict(req.get("context", ""), int(req.get("max_new_tokens", 10)))}
+                res = {"text": predict(req.get("context", ""), int(req.get("max_new_tokens", 10)), bool(req.get("keep_lines")))}
             else:
                 return self._send(404, {"error": "no such route"})
         except Exception as e:  # noqa
