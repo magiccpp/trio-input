@@ -7,7 +7,7 @@
 param([string]$Backend = "auto", [switch]$NoShortcut)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$Release = "https://github.com/magiccpp/trio-input/releases/download/v0.1.0"
+$Release = "https://github.com/magiccpp/trio-input/releases/download/v1.0.0"
 
 function Refresh-Path { $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User') }
 
