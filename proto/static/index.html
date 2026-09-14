@@ -21,7 +21,10 @@
   .cand.sel { background: #2563eb18; }
   .cand small { color: var(--muted); font-size: 12px; margin-right: 4px; }
   .tag { font-size: 10px; padding: 0 5px; border-radius: 8px; color:#fff; vertical-align: middle; margin-left: 4px; }
-  .tag.zh{background:var(--zh)} .tag.en{background:var(--en)} .tag.sv{background:var(--sv)} .tag.llm{background:var(--llm)} .tag.raw{background:#6b7280} .tag.learned{background:#db2777} .tag.spell{background:#0891b2}
+  .tag.zh{background:var(--zh)} .tag.en{background:var(--en)} .tag.sv{background:var(--sv)} .tag.llm{background:var(--llm)} .tag.raw{background:#6b7280} .tag.learned{background:#db2777} .tag.spell{background:#0891b2} .tag.sh{background:#374151} .tag.cmd{background:#4b5563}
+  #shellbadge { display:none; font-size: 11px; padding: 1px 7px; border-radius: 8px; background:#374151; color:#fff; margin-left: 8px; vertical-align: middle; }
+  body.shell #shellbadge { display:inline-block; }
+  body.shell #out { font-family: Consolas, "Cascadia Mono", monospace; font-size: 17px; }
   #learn button { font: inherit; font-size: 12px; padding: 2px 8px; margin-left: 6px; }
   #meta { display:flex; gap: 18px; margin-top: 8px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
   .prob { display:inline-block; min-width: 60px; }
@@ -34,7 +37,8 @@
 <body>
 <div class="wrap">
   <h1>中 / English / Svenska — one input, no switching</h1>
-  <div class="sub">Standalone prototype. Click the box and type pinyin, English or Swedish. Nothing here is registered with Windows.</div>
+  <div class="sub">Standalone prototype. Click the box and type pinyin, English or Swedish. Nothing here is registered with Windows.
+    <span id="shellbadge">command-line mode</span></div>
   <div id="out" tabindex="0"></div>
   <div id="bar"><span style="color:var(--muted);font-size:13px">candidates appear here</span></div>
   <div id="meta">
@@ -43,6 +47,7 @@
     <label><input type="checkbox" id="usellm" checked> use local LLM (<span id="llmname">checking…</span>)</label>
     <label><input type="checkbox" id="autospace" checked> auto space after Latin words</label>
     <label><input type="checkbox" id="predict" checked> predict ahead (<kbd>Tab</kbd> accepts)</label>
+    <label>shell mode <select id="shellmode"><option value="auto" selected>auto (line starts with a command)</option><option value="on">on</option><option value="off">off</option></select></label>
   </div>
   <div id="learn" style="margin-top:6px;font-size:13px;color:var(--muted)"></div>
   <div class="help">
@@ -56,6 +61,19 @@
 const out = document.getElementById('out'), bar = document.getElementById('bar');
 const probsEl = document.getElementById('probs'), timingEl = document.getElementById('timing');
 let text = '', comp = '', rawComp = '', cands = [], sel = 0, svHint = false, verbatim = false, seq = 0, timer = null;
+// ---- command-line mode: decided per line, client-side, from the first token
+let shellCmds = new Set();
+function shellSetting() { return document.getElementById('shellmode').value; }
+function curLine() { return text.slice(text.lastIndexOf('\n') + 1); }
+function inShell() {
+  const s = shellSetting();
+  if (s === 'on') return true;
+  if (s === 'off') return false;
+  const first = curLine().trimStart().split(/\s+/)[0];
+  return !!first && shellCmds.has(first);
+}
+function updateShellUI() { document.body.classList.toggle('shell', inShell() || (shellSetting() === 'auto' && !!comp && shellCmds.has(comp))); }
+const SHELL_CHARS = /[-\/.:=~_@,+*%#$&{}\[\]'";|<>!?\\^]/;   // part of a token when in a command line
 const SID = Math.random().toString(36).slice(2);   // per page load: server-side stale checks are keyed by it
 const CJK = /[一-鿿]/;
 // Swedish letters: real å/ä/ö keys, plus the same physical keys under the US layout
@@ -78,8 +96,8 @@ function render() {
   if (verbatim) { bar.innerHTML = `<span style="color:var(--muted);font-size:13px">verbatim word "${rawComp}" — Space or Enter to commit</span>`; return; }
   cands.forEach((c, i) => {
     const d = document.createElement('span'); d.className = 'cand' + (i === sel ? ' sel' : '');
-    d.innerHTML = `<small>${i + 1}</small>${c.text}<span class="tag ${c.lang}">${c.lang}</span>` +
-      (c.source === 'llm' ? '<span class="tag llm">LLM</span>' : '') + (c.source === 'raw' ? '<span class="tag raw">raw</span>' : '') +
+    d.innerHTML = `<small>${i + 1}</small>${c.text}` + (c.lang === 'sh' ? (c.source === 'raw' ? '' : '<span class="tag cmd">cmd</span>') : `<span class="tag ${c.lang}">${c.lang}</span>`) +
+      (c.source === 'llm' ? '<span class="tag llm">LLM</span>' : '') + (c.source === 'raw' && c.lang !== 'sh' ? '<span class="tag raw">raw</span>' : '') +
       (c.source === 'learned' ? '<span class="tag learned">★</span>' : '') +
       (c.source === 'spell' ? '<span class="tag spell">fix</span>' : '');
     d.title = c.llm !== undefined ? `LLM logp ${c.llm}  score ${c.score?.toFixed(2)}` : c.source;
@@ -95,7 +113,7 @@ async function refresh() {
   if (!comp || verbatim) { cands = []; render(); return; }
   const p = (async () => {
     const r = await fetch('/compose', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ input: comp, raw: rawComp, context: text, sv_hint: svHint, seq: my, sid: SID, use_llm: document.getElementById('usellm').checked }) });
+      body: JSON.stringify({ input: comp, raw: rawComp, context: text, sv_hint: svHint, seq: my, sid: SID, shell: shellSetting(), use_llm: document.getElementById('usellm').checked }) });
     const j = await r.json();
     if (my !== seq) return;               // stale (newer keystroke or a commit happened)
     cands = j.candidates; sel = 0; lastProbs = j.probs; lastPrimary = j.primary;
@@ -114,7 +132,7 @@ async function ensureFresh() {
 }
 
 function insert(s) { text += s; }
-function clearComp() { comp = ''; rawComp = ''; cands = []; svHint = false; verbatim = false; seq++; schedulePredict(); }
+function clearComp() { comp = ''; rawComp = ''; cands = []; svHint = false; verbatim = false; seq++; schedulePredict(); updateShellUI(); }
 let lastProbs = {}, lastPrimary = null, autoSpaced = false;
 function autoSpace() { if (autosp()) { insert(' '); autoSpaced = true; } }
 function commit(i) {
@@ -126,7 +144,7 @@ function commit(i) {
     if (c.lang === 'zh' && autoSpaced && text.endsWith(' ')) text = text.slice(0, -1);
     insert(c.text); autoSpaced = false;
     if (c.lang !== 'zh') autoSpace();
-    learn({text: c.text, lang: c.lang, index: i, source: c.source}, ctxBefore);
+    if (c.lang !== 'sh') learn({text: c.text, lang: c.lang, index: i, source: c.source}, ctxBefore);
   } else { insert(rawComp); autoSpace(); }
   clearComp(); render();
 }
@@ -151,7 +169,7 @@ function showLearning(s) {
   if (b) b.onclick = () => { fetch('/retrain', {method: 'POST'}).then(r => r.json()).then(showLearning); pollRetrain(); };
 }
 // ---- predict ahead (ghost text, Tab accepts one unit)
-let ghost = [], predSeq = 0, predTimer = null;
+let ghost = [], ghostSource = '', predSeq = 0, predTimer = null;
 function schedulePredict(delay = 250) {
   clearTimeout(predTimer);
   if (!document.getElementById('predict').checked) { ghost = []; return; }
@@ -160,10 +178,10 @@ function schedulePredict(delay = 250) {
     if (comp) return;
     try {
       const r = await fetch('/predict', { method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ context: text, seq: my, sid: SID }) });
+        body: JSON.stringify({ context: text, seq: my, sid: SID, shell: shellSetting() }) });
       const j = await r.json();
       if (my !== predSeq || comp) return;
-      ghost = j.units || [];
+      ghost = j.units || []; ghostSource = j.source || '';
       render();
     } catch (e) {}
   }, delay);
@@ -197,15 +215,36 @@ out.addEventListener('keydown', e => {
   chain = chain.then(() => handle(k)).catch(err => console.error(err));
 });
 async function handle(k) {
-  if (k === 'Tab') { if (!comp) acceptGhost(); return; }
-  if (k !== 'Tab') clearGhost();
+  const shell = inShell() || (shellSetting() === 'auto' && !curLine().trim() && !!comp && shellCmds.has(comp));
+  if (k === 'Tab') {
+    if (comp) {                       // shell-style completion of the token being typed
+      await ensureFresh();
+      let i = cands.findIndex(c => c.source === 'cmd');
+      if (i < 0) i = cands.findIndex((c, idx) => idx > 0 && (c.source === 'dict' || c.source === 'spell'));
+      if (shell && cands.length > 1) commit(1); else if (i >= 0) commit(i); else commit(sel);
+    } else acceptGhost();
+    return;
+  }
+  clearGhost();
   if (k === 'Escape') { clearComp(); render(); return; }
+  if (shell && k.length === 1 && (/[a-zA-Z0-9]/.test(k) || SHELL_CHARS.test(k))) {
+    // in a command line every non-space character belongs to the token: -f, svc/app, --tail=100
+    comp += k; rawComp += k; schedule(); render(); updateShellUI(); return;
+  }
   if (k === 'Backspace') {
     if (comp) { comp = comp.slice(0, -1); rawComp = rawComp.slice(0, -1); if (!comp) clearComp(); else schedule(); }
     else text = text.slice(0, -1);
     render(); return;
   }
-  if (k === 'Enter') { if (comp) { insert(rawComp); if (autosp()) insert(' '); clearComp(); } else { insert('\n'); schedulePredict(); } render(); return; }
+  if (k === 'Enter') {
+    if (comp) { insert(rawComp); if (autosp()) insert(' '); clearComp(); }
+    if (shell || inShell()) {          // a finished command line becomes history
+      const line = curLine().trim();
+      if (line) fetch('/shell_line', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ line, force: shellSetting() === 'on' }) }).catch(() => {});
+      text = text.replace(/ +$/, ''); insert('\n'); schedulePredict();
+    } else if (!comp) { insert('\n'); schedulePredict(); }
+    updateShellUI(); render(); return;
+  }
   if (k === ' ') { if (comp) { if (!verbatim) await ensureFresh(); commit(sel); } else { insert(' '); autoSpaced = false; schedulePredict(); } render(); return; }
   if (/^[1-9]$/.test(k) && comp && !verbatim) { await ensureFresh(); commit(parseInt(k) - 1); return; }
   if (k === 'ArrowRight' || k === 'ArrowDown') { if (cands.length) { sel = (sel + 1) % cands.length; render(); } return; }
@@ -213,7 +252,7 @@ async function handle(k) {
   if (k.length !== 1) return;
   if (/[a-zA-Z]/.test(k)) {
     if (!comp && /[A-Z]/.test(k)) verbatim = true;
-    comp += k; rawComp += k; schedule(); render(); return;
+    comp += k; rawComp += k; schedule(); render(); updateShellUI(); return;
   }
   if (NORDIC[k] !== undefined) {
     // ' ; [ are the ä ö å keys of a Swedish keyboard under the US layout.
@@ -234,7 +273,9 @@ out.addEventListener('click', () => out.focus());
 fetch('/status').then(r => r.json()).then(j => {
   document.getElementById('llmname').textContent = j.llm ? `${j.model} on ${j.device_desc || j.device}` : 'not running';
   showLearning(j.learning);
+  shellCmds = new Set(j.shell_cmds || []);
 });
+document.getElementById('shellmode').addEventListener('change', updateShellUI);
 render(); out.focus();
 </script>
 </body>

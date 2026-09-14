@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rime_engine import RimeEngine  # noqa: E402
+import shell_mode  # noqa: E402
 
 try:
     from pypinyin import Style, lazy_pinyin
@@ -352,8 +353,24 @@ def _is_stale(table: dict, sid: str, req_seq: int | None) -> bool:
     return req_seq < table[sid]
 
 
+def compose_shell(raw: str, line: str) -> dict:
+    """command-line mode: literal token first, then completions from history / knowledge base"""
+    t0 = time.perf_counter()
+    cands = [{"text": raw, "lang": "sh", "source": "raw", "prior": 0.0}]
+    comps = shell_mode.command_completions(raw) if not line.strip() else shell_mode.token_completions(line, raw)
+    cands += [{"text": t, "lang": "sh", "source": "cmd", "prior": 0.0} for t in comps if t != raw]
+    return {"preedit": raw, "candidates": cands[:12], "probs": {"sh": 1.0}, "primary": "sh", "shell": True,
+            "fast_ms": round((time.perf_counter() - t0) * 1000, 1), "llm_ms": 0, "llm_used": False}
+
+
 def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "", req_seq: int | None = None,
-            sid: str = "-") -> dict:
+            sid: str = "-", shell: str = "auto") -> dict:
+    line = context.rsplit("\n", 1)[-1]
+    typed_cmd = (raw or inp).lower()
+    at_line_start = not line.strip()
+    if shell == "on" or (shell == "auto" and (shell_mode.is_shell_line(line) or
+                                              (at_line_start and shell_mode.is_shell_line(typed_cmd)))):
+        return compose_shell(raw or inp, line)
     t0 = time.perf_counter()
     stale = _is_stale(_latest_seq, sid, req_seq)
     inp = inp.lower()
@@ -433,6 +450,9 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
     cands: list[dict] = []
     seen = set()
 
+    # at the start of a line a typed prefix of a command name is offered too ("kube" -> kubectl)
+    cmd_comps = shell_mode.command_completions(typed, 3) if (not line.strip() and len(typed) >= 2 and typed.isalpha()) else []
+
     # frequency prior (log, relative to the most frequent candidate of that language)
     en_max = math.log1p(en[0][1]) if en else 0.0
     sv_max = math.log1p(sv[0][1]) if sv else 0.0
@@ -480,6 +500,11 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
         for t, s, pr in buckets[k]:
             add(t, k, s, pr)
 
+    for t in reversed(cmd_comps):        # right after the typed text: "kube" -> kubectl
+        if t not in seen:
+            seen.add(t)
+            cands.insert(min(1, len(cands)), {"text": t, "lang": "sh", "source": "cmd", "prior": -2.0})
+
     # previously chosen words for this input go first (most chosen first)
     for t, e in sorted(learned.items(), key=lambda kv: -kv[1]["n"]):
         idx = next((i for i, c in enumerate(cands) if c["text"] == t), None)
@@ -505,6 +530,13 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
             if is_exact(c) and p[c["lang"]] >= 0.15:
                 cands.insert(0, cands.pop(i))
                 break
+
+    # command-name completions stay right behind the typed text whatever else was promoted
+    cmd_idx = [i for i, c in enumerate(cands) if c["source"] == "cmd"]
+    if cmd_idx and cmd_idx[0] > 1:
+        moved = [cands[i] for i in cmd_idx]
+        cands = [c for c in cands if c["source"] != "cmd"]
+        cands[1:1] = moved
 
     fast_ms = (time.perf_counter() - t0) * 1000
     llm_ms, llm_used, llm_conv = 0.0, False, []
@@ -564,22 +596,41 @@ _latest_pred: dict[str, int] = {}
 UNIT_RE = re.compile(r"\s*[A-Za-zÅÄÖåäöÉé'’-]+|\s*[一-鿿]+|\s*[0-9][0-9.,:%/-]*|\s*\S")
 
 
-def predict_ahead(context: str, req_seq: int | None = None, sid: str = "-") -> dict:
+def predict_ahead(context: str, req_seq: int | None = None, sid: str = "-", shell: str = "auto") -> dict:
     """Next few words from the LLM, split into Tab-sized units (a Latin word incl. its
-    leading space, or a run of Chinese characters)."""
+    leading space, or a run of Chinese characters). In command-line mode the user's own
+    history is consulted first; the LLM sees the lines as a shell session."""
     stale = _is_stale(_latest_pred, sid, req_seq)
+    line = context.rsplit("\n", 1)[-1]
+    is_shell = shell == "on" or (shell == "auto" and shell_mode.is_shell_line(line))
+    if is_shell:
+        rest = shell_mode.line_suggestion(line)
+        if rest:
+            return {"text": rest, "units": UNIT_RE.findall(rest), "source": "history", "shell": True}
     if not context.strip() or not llm_available():
         return {"text": "", "units": []}
     if stale:
         return {"text": "", "units": [], "stale": True}
     t0 = time.perf_counter()
     try:
-        text = llm_post("/predict", {"context": context, "max_new_tokens": 8}, timeout=4.0).get("text", "")
+        if is_shell:
+            # present the recent lines as a terminal session so the model continues a command
+            lines = [l for l in context.split("\n") if l.strip()][-6:]
+            prompt = "\n".join("$ " + l for l in lines)
+            text = llm_post("/predict", {"context": prompt, "max_new_tokens": 12}, timeout=4.0).get("text", "")
+            text = text.split("\n")[0].replace("$ ", "").rstrip()
+            # the user ended a token (trailing space): a continuation that glues onto the
+            # last token ("ps" + "d") is the model extending the word, not a new argument
+            if line.endswith(" ") and text and not text.startswith(" "):
+                text = ""
+        else:
+            text = llm_post("/predict", {"context": context, "max_new_tokens": 8}, timeout=4.0).get("text", "")
     except Exception as e:
         print("predict error:", e, file=sys.stderr)
         return {"text": "", "units": []}
     units = UNIT_RE.findall(text)
-    return {"text": text, "units": units, "ms": round((time.perf_counter() - t0) * 1000, 1)}
+    return {"text": text, "units": units, "ms": round((time.perf_counter() - t0) * 1000, 1), "shell": is_shell,
+            "source": "llm"}
 
 
 # ------------------------------------------------------------------ http
@@ -607,7 +658,9 @@ class H(BaseHTTPRequestHandler):
                     pass
             return self._send(200, json.dumps({"llm": llm_available(), "model": _llm_info["model"], "llm_url": LLM_URL,
                                                "device": info.get("device"), "device_desc": info.get("device_desc"),
-                                               "mem_mb": info.get("mem_mb"), "learning": learning_status()}).encode())
+                                               "mem_mb": info.get("mem_mb"), "learning": learning_status(),
+                                               "shell_cmds": sorted(shell_mode.COMMANDS | set(shell_mode._first_tokens)),
+                                               "shell_history": len(shell_mode._history)}).encode())
         if self.path == "/learning":
             return self._send(200, json.dumps(learning_status(), ensure_ascii=False).encode())
         self._send(404, b"{}")
@@ -617,12 +670,22 @@ class H(BaseHTTPRequestHandler):
         req = json.loads(self.rfile.read(n) or b"{}")
         if self.path == "/compose":
             res = compose(req.get("input", ""), req.get("context", ""), bool(req.get("sv_hint")), bool(req.get("use_llm", True)),
-                          req.get("raw", ""), req.get("seq"), str(req.get("sid", "-")))
+                          req.get("raw", ""), req.get("seq"), str(req.get("sid", "-")), req.get("shell", "auto"))
             return self._send(200, json.dumps(res, ensure_ascii=False).encode())
+        if self.path == "/shell_line":
+            line = req.get("line", "")
+            if req.get("force") or shell_mode.is_shell_line(line):
+                shell_mode.add_history(line)
+            return self._send(200, json.dumps({"lines": len(shell_mode._history)}).encode())
+        if self.path == "/shell_import":
+            p = Path(req.get("path", "")).expanduser()
+            n = shell_mode.import_history(p) if p.is_file() else 0
+            return self._send(200, json.dumps({"imported": n, "lines": len(shell_mode._history)}).encode())
         if self.path == "/select":
             return self._send(200, json.dumps(record_selection(req), ensure_ascii=False).encode())
         if self.path == "/predict":
-            return self._send(200, json.dumps(predict_ahead(req.get("context", ""), req.get("seq"), str(req.get("sid", "-"))), ensure_ascii=False).encode())
+            return self._send(200, json.dumps(predict_ahead(req.get("context", ""), req.get("seq"), str(req.get("sid", "-")),
+                                                            req.get("shell", "auto")), ensure_ascii=False).encode())
         if self.path == "/retrain":
             return self._send(200, json.dumps(retrain_async(), ensure_ascii=False).encode())
         self._send(404, b"{}")

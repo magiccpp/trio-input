@@ -53,6 +53,24 @@ one digit away.
 corrections within one edit — two for longer words — tagged `fix`: `beleve` → believe,
 `recieved` → received, `sjlav` → själv. The literal word stays as candidate 2 (or Enter).
 
+### Command-line mode
+When a line starts with a known command (`kubectl`, `nerdctl`, `docker`, `git`, `ssh`,
+`uv`, `pip`, … or anything you have typed before) the input switches to shell behaviour
+for that line — badge "command-line mode", monospace:
+
+* no pinyin, no spelling fixes, no Chinese punctuation; `-`, `/`, `=`, `.`, `~`, `:` …
+  are part of the token (`--tail=100`, `svc/api`, `~/src`)
+* **Space** commits exactly what you typed; **Tab** completes the token
+  (`kube` → kubectl, `g` → get, `po` → pods, `-n`, …) from your history first, then a
+  built-in table of subcommands/resources/flags for common tools
+* **Enter** finishes the line and stores it as history (`proto/data/shell_history.txt`);
+  next time, `kubectl get ` shows the rest of your most recent matching line as ghost
+  text, Tab walks through it. Lines not in history are predicted by the LLM
+  (`git commit ` → ` -m "…"`, `docker run -it ` → ` -p 8080:8080`).
+* Import existing history: `POST /shell_import {"path": "~/.bash_history"}` (PSReadLine:
+  `%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`). History
+  stays local. The `shell mode` selector forces on/off.
+
 ### Learning and retraining
 Every commit is logged (`proto/data/selections.jsonl`). Words you pick are promoted
 immediately for that input in the same surrounding language (★ tag). After 50 corrections
