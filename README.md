@@ -80,6 +80,20 @@ typed ascii ─► char n-gram language model (zh/en/sv) + context (last words, 
 * `train/` — builds the dictionaries (`build_dicts.py`, `build_zh_freq.py`) and the
   language model (`train_langid.py`, also used by retrain).
 
+Intel iGPU vs NPU (Core Ultra 7 155H, OpenVINO 2026.3, Qwen3-0.6B int8, the `/score`
+workload = 10 candidates × 23 tokens in one batch, and an 8-token `/predict`):
+
+| device | score batch | generate 8 tokens | note |
+|---|---|---|---|
+| iGPU (Arc), OpenVINO | 195 ms | 340 ms | |
+| iGPU (Arc), torch XPU bf16 | ≈120 ms | – | what `llm_server.py` uses |
+| CPU, OpenVINO int8 | 420 ms | 205 ms | |
+| NPU, OpenVINO NPUW LLM pipeline | 5 200 ms (10 sequential prefills) | 3 400 ms | only path that compiles; batched/dynamic shapes rejected |
+
+The NPU is built for long single-stream decoding with static shapes; this input method's
+workload (many short batched prefills per keystroke) runs 15–25× slower there than on the
+iGPU. Use the iGPU (`DEVICE=xpu`) or the CPU.
+
 Measured on a Xeon W-2235 (CPU int8): ≈100 ms per keystroke with the LLM, ≈10 ms without;
 43-case evaluation (`proto/eval_proto.py`) 41–42/43 either way, the remaining misses being
 genuinely ambiguous two-letter words. Intel Arc iGPU (Core Ultra 7): ≈120 ms. RTX 3090: ≈45 ms.
