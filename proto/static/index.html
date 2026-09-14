@@ -21,7 +21,7 @@
   .cand.sel { background: #2563eb18; }
   .cand small { color: var(--muted); font-size: 12px; margin-right: 4px; }
   .tag { font-size: 10px; padding: 0 5px; border-radius: 8px; color:#fff; vertical-align: middle; margin-left: 4px; }
-  .tag.zh{background:var(--zh)} .tag.en{background:var(--en)} .tag.sv{background:var(--sv)} .tag.llm{background:var(--llm)} .tag.raw{background:#6b7280} .tag.learned{background:#db2777}
+  .tag.zh{background:var(--zh)} .tag.en{background:var(--en)} .tag.sv{background:var(--sv)} .tag.llm{background:var(--llm)} .tag.raw{background:#6b7280} .tag.learned{background:#db2777} .tag.spell{background:#0891b2}
   #learn button { font: inherit; font-size: 12px; padding: 2px 8px; margin-left: 6px; }
   #meta { display:flex; gap: 18px; margin-top: 8px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
   .prob { display:inline-block; min-width: 60px; }
@@ -80,7 +80,8 @@ function render() {
     const d = document.createElement('span'); d.className = 'cand' + (i === sel ? ' sel' : '');
     d.innerHTML = `<small>${i + 1}</small>${c.text}<span class="tag ${c.lang}">${c.lang}</span>` +
       (c.source === 'llm' ? '<span class="tag llm">LLM</span>' : '') + (c.source === 'raw' ? '<span class="tag raw">raw</span>' : '') +
-      (c.source === 'learned' ? '<span class="tag learned">★</span>' : '');
+      (c.source === 'learned' ? '<span class="tag learned">★</span>' : '') +
+      (c.source === 'spell' ? '<span class="tag spell">fix</span>' : '');
     d.title = c.llm !== undefined ? `LLM logp ${c.llm}  score ${c.score?.toFixed(2)}` : c.source;
     d.onclick = () => commit(i);
     bar.appendChild(d);

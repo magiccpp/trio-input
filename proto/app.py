@@ -233,6 +233,41 @@ def prefix_lookup(codes: list[str], table: dict, prefix: str, limit: int) -> lis
     return res
 
 
+# ------------------------------------------------------------------ spelling correction
+ALPHA = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _edits1(w: str):
+    splits = [(w[:i], w[i:]) for i in range(len(w) + 1)]
+    yield from (a + b[1:] for a, b in splits if b)                                   # delete
+    yield from (a + b[1] + b[0] + b[2:] for a, b in splits if len(b) > 1)            # transpose
+    yield from (a + c + b[1:] for a, b in splits if b for c in ALPHA)               # replace
+    yield from (a + c + b for a, b in splits for c in ALPHA)                        # insert
+
+
+def spell_candidates(typed: str, table: dict, limit: int = 4) -> list[tuple[str, int, int]]:
+    """dictionary words within edit distance 1 (or 2 for longer words) of the typed
+    code -> [(text, weight, distance)], best first. Codes are ASCII-folded, so this
+    also finds själv for 'sjlav'."""
+    if len(typed) < 4 or typed in table:
+        return []
+    found: dict[str, tuple[int, int]] = {}
+    e1 = set(_edits1(typed))
+    for c in e1:
+        for t, w in table.get(c, []):
+            if t not in found or w > found[t][0]:
+                found[t] = (w, 1)
+    if not found and len(typed) >= 5:
+        for c1 in e1:
+            for c2 in _edits1(c1):
+                if c2 in table:
+                    for t, w in table[c2]:
+                        if t not in found or w > found[t][0]:
+                            found[t] = (w, 2)
+    out = sorted(found.items(), key=lambda kv: (kv[1][1], -kv[1][0]))
+    return [(t, w, d) for t, (w, d) in out[:limit]]
+
+
 def cand_lang(text: str) -> str:
     if CJK.search(text):
         return "zh"
@@ -351,6 +386,22 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
     sv = prefix_lookup(SV_CODES, SV, typed, 12)
     if has_nordic:
         sv = [(t, w) for t, w in sv if diacritics_ok(t, inp)][:8]
+    # spelling: "beleve" -> believe. Only when the typed word is a dead end (no exact
+    # match and no completion in that dictionary) — while a word is still being typed
+    # the completions are the right suggestions.
+    spelled: set[str] = set()
+    if not en and not has_nordic:
+        en = [(t, w) for t, w, d in spell_candidates(typed, EN)]
+        spelled.update(t for t, _ in en)
+    if not sv:
+        sv = [(t, w) for t, w, d in spell_candidates(typed, SV)]
+        spelled.update(t for t, _ in sv)
+    if spelled:
+        # a plausible correction counts as evidence for that language too
+        for lang in ("en", "sv"):
+            if any(t in spelled for t, _ in (en if lang == "en" else sv)):
+                w = max((w for t, w in (en if lang == "en" else sv) if t in spelled), default=0)
+                p[lang] *= 1 + math.log1p(w) ** 2 / 24
 
     # an exact hit on a common word is strong evidence for that language
     # (many English words are also valid pinyin: like, can, hen, man ...)
@@ -389,6 +440,8 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
     def add(text, lang, source, prior=0.0):
         if text and text not in seen:
             seen.add(text)
+            if text in spelled and source == "dict":
+                source, prior = "spell", prior - 1.0       # one edit away: a small penalty
             cands.append({"text": text, "lang": lang, "source": source, "prior": round(prior, 2)})
 
     exact_latin = any(t.lower().translate(FOLD) == typed for t, _ in en + sv)
@@ -402,10 +455,14 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
     }
     order = [o for o in order if buckets[o]] + [o for o in order if not buckets[o]]
     primary = order[0]
-    if primary != "zh" and not exact_latin and typed.isalpha():
+    raw_first = primary != "zh" and not exact_latin and typed.isalpha()
+    has_fix = any(t in spelled for t, _, _ in buckets[primary])
+    if raw_first and not has_fix:
         add(inp if has_nordic else typed, primary, "raw", -3.0)
-    for t, s, pr in buckets[primary]:
+    for i, (t, s, pr) in enumerate(buckets[primary]):
         add(t, primary, s, pr)
+        if raw_first and has_fix and i == 0:          # the correction first, the literal word second
+            add(inp if has_nordic else typed, primary, "raw", -3.0)
     # the literal keys (e.g. don't, we're) stay reachable as candidate 2
     raw = (raw or "").lower()
     if raw and raw != inp and "'" in raw and re.fullmatch(r"[a-z']+", raw):
@@ -460,7 +517,7 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
             def full(c):
                 if c["lang"] == "zh":
                     return pinyin_of(c["text"]) == typed_v
-                if c["source"] in ("raw", "learned"):
+                if c["source"] in ("raw", "learned", "spell"):
                     return True
                 return c["text"].lower().translate(FOLD) == typed
             if typed.isalpha() and not exact_latin and not any(c["source"] == "raw" for c in cands):

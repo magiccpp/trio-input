@@ -37,6 +37,11 @@ CASES = [
     ("we ", "like", "like"),
     ("she is a ", "hen", "hen"),
     ("it is ", "so", "so"),
+    # spelling
+    ("hi, I ", "beleve", "believe"),
+    ("we ", "recieved", "received"),
+    ("jag ", "sjlav", "själv"),
+    ("det är ", "mycet", "mycket"),
     # Swedish (ascii-folded typing)
     ("", "hej", "hej"),
     ("hej ", "jag", "jag"),

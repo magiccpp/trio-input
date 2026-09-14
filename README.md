@@ -49,6 +49,10 @@ Requirements: Windows x64, ~4 GB disk, ~2.5 GB free RAM (CPU mode), internet for
 The best candidate of every language is always within the first five, so a wrong guess is
 one digit away.
 
+**Spelling**: a Latin word that matches nothing (no exact word, no completion) gets
+corrections within one edit — two for longer words — tagged `fix`: `beleve` → believe,
+`recieved` → received, `sjlav` → själv. The literal word stays as candidate 2 (or Enter).
+
 ### Learning and retraining
 Every commit is logged (`proto/data/selections.jsonl`). Words you pick are promoted
 immediately for that input in the same surrounding language (★ tag). After 50 corrections
