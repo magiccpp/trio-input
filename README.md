@@ -14,7 +14,7 @@ on a plain US keyboard layout, never touching a language switch.
 This is a **standalone prototype**: a local web page emulates the input method. Nothing is
 registered with Windows. (A RIME/Weasel schema version of the same idea lives in `rime/`.)
 
-## Install (Windows 10/11 x64)
+## Install (Windows 10/11 x64) — release v1.0.0
 
 ```powershell
 git clone https://github.com/magiccpp/trio-input.git
