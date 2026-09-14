@@ -497,6 +497,8 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
     def is_exact(c):
         if c["source"] == "learned":
             return True
+        if c["source"] == "raw":       # the literal typed word is not a dictionary match
+            return False
         return c["lang"] != "zh" and c["text"].lower().translate(FOLD) == typed
     if cands and not is_exact(cands[0]) and cands[0]["lang"] != "zh":
         for i, c in enumerate(cands[:6]):
