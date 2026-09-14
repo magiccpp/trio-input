@@ -586,16 +586,6 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
             llm_ms = -1
             print("llm error:", e, file=sys.stderr)
 
-    # command-name completions: first when the typed text is no real word ("kube" -> kubectl
-    # beats the spelling guess "tube"), otherwise right behind the typed text
-    cmd_idx = [i for i, c in enumerate(cands) if c["source"] == "cmd"]
-    if cmd_idx:
-        pos = 1 if exact_latin else 0
-        if cmd_idx[0] > pos:
-            moved = [cands[i] for i in cmd_idx]
-            cands = [c for c in cands if c["source"] != "cmd"]
-            cands[pos:pos] = moved
-
     return {"preedit": preedit or inp, "candidates": cands[:12], "probs": {k: round(v, 3) for k, v in p.items()},
             "primary": cands[0]["lang"] if cands else primary, "fast_ms": round(fast_ms, 1),
             "llm_ms": round(llm_ms, 1), "llm_used": llm_used, "llm_model": _llm_info["model"], "llm_conv": llm_conv}
@@ -627,25 +617,12 @@ def predict_ahead(context: str, req_seq: int | None = None, sid: str = "-", shel
             # present the recent lines as a terminal session so the model continues a command
             lines = [l for l in context.split("\n") if l.strip()][-6:]
             prompt = "\n".join("$ " + l for l in lines)
-            out = llm_post("/predict", {"context": prompt, "max_new_tokens": 16, "keep_lines": True}, timeout=5.0).get("text", "")
-            first, _, more = out.partition("\n")
-            text = first.rstrip()
+            text = llm_post("/predict", {"context": prompt, "max_new_tokens": 12}, timeout=4.0).get("text", "")
+            text = text.split("\n")[0].replace("$ ", "").rstrip()
             # the user ended a token (trailing space): a continuation that glues onto the
             # last token ("ps" + "d") is the model extending the word, not a new argument
             if line.endswith(" ") and text and not text.startswith(" "):
                 text = ""
-            if not text:
-                # the model started a fresh prompt line instead: "$ git commit -m ..." — use
-                # it when it repeats the current line
-                cur = line.strip()
-                for l in more.split("\n"):
-                    l = l.strip()
-                    if l.startswith("$ "):
-                        l = l[2:]
-                    if cur and l.startswith(cur) and len(l) > len(cur):
-                        text = (" " if line.endswith(" ") and not l[len(cur):].startswith(" ") else "") + l[len(cur):].rstrip()
-                        text = text.replace("  ", " ")
-                        break
         else:
             text = llm_post("/predict", {"context": context, "max_new_tokens": 8}, timeout=4.0).get("text", "")
     except Exception as e:
