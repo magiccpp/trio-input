@@ -150,15 +150,13 @@ var
   PartsFile: String;
 begin
   Result := '';
-  if DetectedGpu = '' then begin          { silent install: the components page was never shown }
-    DetectedGpu := DetectGpu;
-    { silent installs: /GPU=auto (default) uses the detected hardware; /GPU=cpu|xpu|cuda forces one }
-    if WizardSilent then begin
-      ChosenBackend := Lowercase(ExpandConstant('{param:GPU|auto}'));
-      Log('GPU switch: ' + ChosenBackend);
-      if (ChosenBackend <> 'cpu') and (ChosenBackend <> 'xpu') and (ChosenBackend <> 'cuda') then ChosenBackend := DetectedGpu;
-      WizardSelectComponents(ChosenBackend);
-    end;
+  if DetectedGpu = '' then DetectedGpu := DetectGpu;
+  { silent installs: /GPU=auto (default) uses the detected hardware; /GPU=cpu|xpu|cuda forces one }
+  if WizardSilent then begin
+    ChosenBackend := Lowercase(ExpandConstant('{param:GPU|auto}'));
+    Log('GPU switch: ' + ChosenBackend);
+    if (ChosenBackend <> 'cpu') and (ChosenBackend <> 'xpu') and (ChosenBackend <> 'cuda') then ChosenBackend := DetectedGpu;
+    WizardSelectComponents(ChosenBackend);
   end;
   Log('Runtime backend: ' + Backend);
   DownloadPage.Clear;
