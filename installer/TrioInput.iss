@@ -94,6 +94,16 @@ var
   DownloadPage: TDownloadWizardPage;
   DetectedGpu: String;
   RuntimeParts: TArrayOfString;
+  HaveRuntime, HaveModel: Boolean;
+
+// which runtime a previous install put in <app>\runtime (recorded in runtime\backend.txt)
+function InstalledBackend: String;
+var
+  S: AnsiString;
+begin
+  Result := '';
+  if LoadStringFromFile(ExpandConstant('{app}\runtime\backend.txt'), S) then Result := Trim(String(S));
+end;
 
 function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
 begin
@@ -167,19 +177,30 @@ begin
   DownloadPage.Show;
   try
     try
-      { the .parts manifest lists the zip parts of the runtime for this backend }
-      DownloadTemporaryFile('{#Release}/python-runtime-' + Backend + '-win64.parts', 'runtime.parts', '', @OnDownloadProgress);
-      PartsFile := ExpandConstant('{tmp}\runtime.parts');
-      if not LoadStringsFromFile(PartsFile, RuntimeParts) then RaiseException('cannot read runtime.parts');
-      for i := 0 to GetArrayLength(RuntimeParts) - 1 do
-        if Trim(RuntimeParts[i]) <> '' then
-          DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
-      if WizardIsComponentSelected('ime') and not FileExists(ExpandConstant('{pf32}\PIME\x64\PIMETextService.dll')) then
+      { re-running the setup over an existing install: keep what is already there }
+      HaveRuntime := FileExists(ExpandConstant('{app}\runtime\python.exe')) and (Backend = InstalledBackend);
+      HaveModel := FileExists(ExpandConstant('{app}\llm\models\Qwen3-0.6B\tokenizer.json')) and
+                   FileExists(ExpandConstant('{app}\llm\models\Qwen3-0.6B-int8.pt')) and
+                   ((Backend = 'cpu') or FileExists(ExpandConstant('{app}\llm\models\Qwen3-0.6B\model.safetensors')));
+      SetArrayLength(RuntimeParts, 0);
+      if not HaveRuntime then begin
+        { the .parts manifest lists the zip parts of the runtime for this backend }
+        DownloadTemporaryFile('{#Release}/python-runtime-' + Backend + '-win64.parts', 'runtime.parts', '', @OnDownloadProgress);
+        PartsFile := ExpandConstant('{tmp}\runtime.parts');
+        if not LoadStringsFromFile(PartsFile, RuntimeParts) then RaiseException('cannot read runtime.parts');
+        for i := 0 to GetArrayLength(RuntimeParts) - 1 do
+          if Trim(RuntimeParts[i]) <> '' then
+            DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
+      end else Log('runtime already installed, not downloading');
+      if WizardIsComponentSelected('ime') and not (FileExists(ExpandConstant('{pf32}\PIME\PIMELauncher.exe')) and
+                                                   FileExists(ExpandConstant('{pf32}\PIME\python\server.py'))) then
         DownloadPage.Add('{#Release}/PIME-1.3.0-stable-setup.exe', 'PIME-setup.exe', '');
-      DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
-      DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
-      if Backend <> 'cpu' then
-        DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
+      if not HaveModel then begin
+        DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
+        DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
+        if Backend <> 'cpu' then
+          DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
+      end else Log('model already installed, not downloading');
       DownloadPage.Download;
     except
       if DownloadPage.AbortedByUser then Result := 'Download cancelled.'
@@ -209,15 +230,21 @@ begin
   if CurStep = ssPostInstall then begin
     Tmp := ExpandConstant('{tmp}');
     App := ExpandConstant('{app}');
-    for i := 0 to GetArrayLength(RuntimeParts) - 1 do begin
-      WizardForm.StatusLabel.Caption := Format('Unpacking the Python runtime (part %d of %d) ...', [i + 1, GetArrayLength(RuntimeParts)]);
-      if FileExists(Tmp + Format('\runtime%d.zip', [i])) then Unpack(Tmp + Format('\runtime%d.zip', [i]), App + '\runtime');
+    if not HaveRuntime then begin
+      if DirExists(App + '\runtime') then DelTree(App + '\runtime', True, True, True);   { switching backend }
+      for i := 0 to GetArrayLength(RuntimeParts) - 1 do begin
+        WizardForm.StatusLabel.Caption := Format('Unpacking the Python runtime (part %d of %d) ...', [i + 1, GetArrayLength(RuntimeParts)]);
+        if FileExists(Tmp + Format('\runtime%d.zip', [i])) then Unpack(Tmp + Format('\runtime%d.zip', [i]), App + '\runtime');
+      end;
+      SaveStringToFile(App + '\runtime\backend.txt', Backend, False);
     end;
-    WizardForm.StatusLabel.Caption := 'Installing the language model ...';
-    Unpack(Tmp + '\tokenizer.zip', App + '\llm\models\Qwen3-0.6B');
-    FileCopy(Tmp + '\Qwen3-0.6B-int8.pt', App + '\llm\models\Qwen3-0.6B-int8.pt', False);
-    if FileExists(Tmp + '\model.safetensors') then
-      FileCopy(Tmp + '\model.safetensors', App + '\llm\models\Qwen3-0.6B\model.safetensors', False);
+    if not HaveModel then begin
+      WizardForm.StatusLabel.Caption := 'Installing the language model ...';
+      Unpack(Tmp + '\tokenizer.zip', App + '\llm\models\Qwen3-0.6B');
+      FileCopy(Tmp + '\Qwen3-0.6B-int8.pt', App + '\llm\models\Qwen3-0.6B-int8.pt', False);
+      if FileExists(Tmp + '\model.safetensors') then
+        FileCopy(Tmp + '\model.safetensors', App + '\llm\models\Qwen3-0.6B\model.safetensors', False);
+    end;
     WizardForm.StatusLabel.Caption := 'Building the pinyin dictionary (one-off) ...';
     Exec(App + '\runtime\python.exe', '"' + App + '\proto\rime_engine.py" nihao', App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
     if WizardIsComponentSelected('ime') then begin

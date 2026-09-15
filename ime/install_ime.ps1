@@ -4,7 +4,8 @@
 param([switch]$Remove, [string]$PimeSetup = "")
 $ErrorActionPreference = 'Stop'
 $pime = "${env:ProgramFiles(x86)}\PIME"
-if (-not $Remove -and -not (Test-Path "$pime\x64\PIMETextService.dll") -and -not $PimeSetup) {
+$pimeOk = (Test-Path "$pime\x64\PIMETextService.dll") -and (Test-Path "$pime\PIMELauncher.exe") -and (Test-Path "$pime\python\server.py")
+if (-not $Remove -and -not $pimeOk -and -not $PimeSetup) {
     throw "PIME is not installed. Get PIME-1.3.0-stable-setup.exe from https://github.com/EasyIME/PIME/releases and pass -PimeSetup <path>"
 }
 $elev = Join-Path $PSScriptRoot 'ime_setup_elevated.ps1'
