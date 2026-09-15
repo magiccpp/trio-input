@@ -42,6 +42,7 @@ Name: "autostart"; Description: "Start Trio Input when I log in"; GroupDescripti
 Name: "cpu";  Description: "CPU runtime — works everywhere (~2 GB RAM, download ~1.7 GB)";                       Types: full compact custom; Flags: exclusive
 Name: "xpu";  Description: "Intel GPU / iGPU runtime — Arc, Core Ultra (needs a recent Intel driver, ~3.2 GB)"; Types: custom; Flags: exclusive
 Name: "cuda"; Description: "NVIDIA GPU runtime — CUDA 12 (needs a recent NVIDIA driver, ~4.5 GB)";              Types: custom; Flags: exclusive
+Name: "ime";  Description: "System-wide input method (installs PIME text service, asks for administrator rights once)"; Types: full custom
 
 [Files]
 Source: "{#Src}\proto\*"; DestDir: "{app}\proto"; Excludes: "data\*,__pycache__\*,*.log,probe_*.py,test_*.py,eval_*.py"; Flags: ignoreversion recursesubdirs
@@ -51,6 +52,9 @@ Source: "{#Src}\rime\sv_words.dict.yaml"; DestDir: "{app}\rime"; Flags: ignoreve
 Source: "{#Src}\train\*.py"; DestDir: "{app}\train"; Flags: ignoreversion
 Source: "{#Src}\train\data\*"; DestDir: "{app}\train\data"; Flags: ignoreversion
 Source: "{#Src}\llm\quantize_model.py"; DestDir: "{app}\llm"; Flags: ignoreversion
+Source: "{#Src}\ime\trio\*"; DestDir: "{app}\ime\trio"; Flags: ignoreversion recursesubdirs
+Source: "{#Src}\ime\ime_setup_elevated.ps1"; DestDir: "{app}\ime"; Flags: ignoreversion
+Source: "{#Src}\ime\install_ime.ps1"; DestDir: "{app}\ime"; Flags: ignoreversion
 Source: "{#Src}\start.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Src}\stop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Src}\README.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -170,6 +174,8 @@ begin
       for i := 0 to GetArrayLength(RuntimeParts) - 1 do
         if Trim(RuntimeParts[i]) <> '' then
           DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
+      if WizardIsComponentSelected('ime') and not FileExists(ExpandConstant('{pf32}\PIME\x64\PIMETextService.dll')) then
+        DownloadPage.Add('{#Release}/PIME-1.3.0-stable-setup.exe', 'PIME-setup.exe', '');
       DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
       DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
       if Backend <> 'cpu' then
@@ -214,5 +220,32 @@ begin
       FileCopy(Tmp + '\model.safetensors', App + '\llm\models\Qwen3-0.6B\model.safetensors', False);
     WizardForm.StatusLabel.Caption := 'Building the pinyin dictionary (one-off) ...';
     Exec(App + '\runtime\python.exe', '"' + App + '\proto\rime_engine.py" nihao', App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if WizardIsComponentSelected('ime') then begin
+      WizardForm.StatusLabel.Caption := 'Registering the system-wide input method (administrator prompt) ...';
+      { the elevated part: PIME setup if needed, module copy, regsvr32 }
+      ShellExec('runas', 'powershell.exe',
+                '-NoProfile -ExecutionPolicy Bypass -File "' + App + '\ime\ime_setup_elevated.ps1" -ModuleDir "' + App + '\ime\trio" -PimeSetup "' + Tmp + '\PIME-setup.exe"',
+                App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      if ResultCode <> 0 then
+        MsgBox('The input method could not be registered (code ' + IntToStr(ResultCode) + '). You can retry later with ime\install_ime.ps1.', mbError, MB_OK)
+      else begin
+        { as the normal user: start PIME''s launcher and add the profile to the keyboard list }
+        Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process ''' + ExpandConstant('{pf32}') + '\PIME\PIMELauncher.exe''; $tip=''0804:{35F67E9D-A54D-4177-9697-8B0AB71A9E04}{6B1A4C2E-7D3F-4A5B-9E8C-2F1D0A3B4C5D}''; $l=Get-WinUserLanguageList; $zh=$l | Where-Object LanguageTag -eq ''zh-Hans-CN''; if(-not $zh){$l.Add(''zh-Hans-CN''); $zh=$l | Where-Object LanguageTag -eq ''zh-Hans-CN''}; if($zh.InputMethodTips -notcontains $tip){$zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $l -Force}"',
+             App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      end;
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+  App: String;
+begin
+  if CurUninstallStep = usUninstall then begin
+    App := ExpandConstant('{app}');
+    if FileExists(ExpandConstant('{pf32}\PIME\python\input_methods\trio\ime.json')) then
+      ShellExec('runas', 'powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + App + '\ime\ime_setup_elevated.ps1" -Remove',
+                App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

@@ -1,27 +1,24 @@
-# Installs the Trio Input method into PIME and registers it system-wide (needs admin: UAC prompt).
-#   powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1          # install / update
-#   powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1 -Remove  # remove
-param([switch]$Remove)
+# Installs the Trio Input method into PIME and registers it system-wide (one UAC prompt).
+#   powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1 [-PimeSetup PIME-1.3.0-stable-setup.exe]
+#   powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1 -Remove
+param([switch]$Remove, [string]$PimeSetup = "")
 $ErrorActionPreference = 'Stop'
 $pime = "${env:ProgramFiles(x86)}\PIME"
-if (-not (Test-Path "$pime\x64\PIMETextService.dll")) { throw "PIME is not installed. Get PIME-1.3.0-stable-setup.exe from https://github.com/EasyIME/PIME/releases" }
-$src = Join-Path $PSScriptRoot 'trio'
-$dst = "$pime\python\input_methods\trio"
-
-$script = @"
-`$ErrorActionPreference = 'Stop'
-if ('$($Remove.IsPresent)' -eq 'True') { Remove-Item -Recurse -Force '$dst' -ErrorAction SilentlyContinue }
-else { New-Item -ItemType Directory -Force '$dst' | Out-Null; Copy-Item '$src\*' '$dst' -Recurse -Force }
-Get-Process PIMELauncher -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 1
-& regsvr32 /s '$pime\x86\PIMETextService.dll'
-& regsvr32 /s '$pime\x64\PIMETextService.dll'
-"@
-$tmp = Join-Path $env:TEMP 'trio-ime-install.ps1'
-Set-Content $tmp $script -Encoding UTF8
-$p = Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmp`"" -Verb RunAs -Wait -PassThru
+if (-not $Remove -and -not (Test-Path "$pime\x64\PIMETextService.dll") -and -not $PimeSetup) {
+    throw "PIME is not installed. Get PIME-1.3.0-stable-setup.exe from https://github.com/EasyIME/PIME/releases and pass -PimeSetup <path>"
+}
+$elev = Join-Path $PSScriptRoot 'ime_setup_elevated.ps1'
+$args = if ($Remove) { "-Remove" } else { "-ModuleDir `"$(Join-Path $PSScriptRoot 'trio')`"" + $(if ($PimeSetup) { " -PimeSetup `"$PimeSetup`"" } else { "" }) }
+$p = Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$elev`" $args" -Verb RunAs -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "elevated step failed ($($p.ExitCode))" }
-# the launcher runs as the normal user (it is what the TSF DLL connects to); start it unelevated
-if (-not $Remove) { Start-Process "$pime\PIMELauncher.exe" }
 if ($Remove) { Write-Host "Trio Input removed from PIME." }
-else { Write-Host "Trio Input installed. Add it under Settings > Time & Language > Language > Chinese (Simplified) > Keyboards, or switch with Win+Space." }
+else {
+    Start-Process "$pime\PIMELauncher.exe"      # runs as the normal user
+    # make sure the profile is in the user's Chinese (Simplified) keyboard list
+    $tip = '0804:{35F67E9D-A54D-4177-9697-8B0AB71A9E04}{6B1A4C2E-7D3F-4A5B-9E8C-2F1D0A3B4C5D}'
+    $list = Get-WinUserLanguageList
+    $zh = $list | Where-Object LanguageTag -eq 'zh-Hans-CN'
+    if (-not $zh) { $list.Add('zh-Hans-CN'); $zh = $list | Where-Object LanguageTag -eq 'zh-Hans-CN' }
+    if ($zh.InputMethodTips -notcontains $tip) { $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }
+    Write-Host "Trio Input installed. Switch to 'Trio Input 中/EN/SV' with Win+Space."
+}
