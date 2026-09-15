@@ -132,9 +132,13 @@ begin
   end;
 end;
 
+var
+  ChosenBackend: String;
+
 function Backend: String;
 begin
-  if WizardIsComponentSelected('cuda') then Result := 'cuda'
+  if ChosenBackend <> '' then Result := ChosenBackend
+  else if WizardIsComponentSelected('cuda') then Result := 'cuda'
   else if WizardIsComponentSelected('xpu') then Result := 'xpu'
   else Result := 'cpu';
 end;
@@ -150,8 +154,10 @@ begin
     DetectedGpu := DetectGpu;
     { silent installs: /GPU=auto (default) uses the detected hardware; /GPU=cpu|xpu|cuda forces one }
     if WizardSilent then begin
-      if Lowercase(ExpandConstant('{param:GPU|auto}')) = 'auto' then WizardSelectComponents(DetectedGpu)
-      else WizardSelectComponents(Lowercase(ExpandConstant('{param:GPU|auto}')));
+      ChosenBackend := Lowercase(ExpandConstant('{param:GPU|auto}'));
+      Log('GPU switch: ' + ChosenBackend);
+      if (ChosenBackend <> 'cpu') and (ChosenBackend <> 'xpu') and (ChosenBackend <> 'cuda') then ChosenBackend := DetectedGpu;
+      WizardSelectComponents(ChosenBackend);
     end;
   end;
   Log('Runtime backend: ' + Backend);
