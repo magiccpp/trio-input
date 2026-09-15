@@ -21,9 +21,11 @@ registered with Windows. (A RIME/Weasel schema version of the same idea lives in
 No git, no Python, no admin rights. The setup installs into `%LOCALAPPDATA%\TrioInput`,
 downloads the Python runtime and the language model (≈1.7 GB, CPU) during installation,
 and creates **Trio Input** in the Start Menu (optionally on the desktop / at login).
-Choose the *Intel GPU* runtime on the components page if you have an Arc or Core Ultra
-iGPU (+1.5 GB). Start Trio Input → the input page opens at http://127.0.0.1:8766.
-Uninstall from Windows Settings → Apps.
+The setup detects your GPU and pre-selects the matching runtime: NVIDIA → CUDA (~4.5 GB
+download), Intel Arc / Core Ultra iGPU → XPU (~3.2 GB), otherwise CPU (~1.7 GB); you can
+override it on the components page. Start Trio Input → the input page opens at
+http://127.0.0.1:8766. Uninstall from Windows Settings → Apps.
+Unattended: `TrioInput-Setup-1.0.1.exe /VERYSILENT /GPU=auto|cpu|xpu|cuda`.
 
 Requirements: Windows 10/11 x64, ~4 GB disk, ~2.5 GB free RAM, internet during install only.
 
