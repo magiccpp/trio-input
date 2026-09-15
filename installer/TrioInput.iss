@@ -148,7 +148,11 @@ begin
   Result := '';
   if DetectedGpu = '' then begin          { silent install: the components page was never shown }
     DetectedGpu := DetectGpu;
-    if WizardSilent and (ExpandConstant('{param:COMPONENTS|}') = '') then WizardSelectComponents(DetectedGpu);
+    { silent installs: /GPU=auto (default) uses the detected hardware; /GPU=cpu|xpu|cuda forces one }
+    if WizardSilent then begin
+      if Lowercase(ExpandConstant('{param:GPU|auto}')) = 'auto' then WizardSelectComponents(DetectedGpu)
+      else WizardSelectComponents(Lowercase(ExpandConstant('{param:GPU|auto}')));
+    end;
   end;
   Log('Runtime backend: ' + Backend);
   DownloadPage.Clear;
