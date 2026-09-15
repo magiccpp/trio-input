@@ -6,9 +6,9 @@ Add-Type -AssemblyName System.Windows.Forms, UIAutomationClient, UIAutomationTyp
 # PIME's TSF service CLSID + our language-profile GUID (from ime\trio\ime.json)
 $tip = '0804:{35F67E9D-A54D-4177-9697-8B0AB71A9E04}{6B1A4C2E-7D3F-4A5B-9E8C-2F1D0A3B4C5D}'
 $list = Get-WinUserLanguageList
-$zh = $list | Where-Object LanguageTag -eq 'zh-Hans-CN'
-$had = $zh.InputMethodTips -contains $tip
-if (-not $had) { $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }
+$zh = $null; foreach ($x in $list) { if ($x.LanguageTag -eq 'zh-Hans-CN') { $zh = $x } }
+$had = $zh -and ($zh.InputMethodTips -contains $tip)
+if ($zh -and -not $had) { $zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $list -Force }
 $py = Join-Path $PSScriptRoot '..\train\.venv\Scripts\python.exe'
 $prevProfile = & $py (Join-Path $PSScriptRoot 'activate_profile.py') --current
 Write-Output "before: $prevProfile"

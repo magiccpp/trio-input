@@ -55,6 +55,7 @@ Source: "{#Src}\llm\quantize_model.py"; DestDir: "{app}\llm"; Flags: ignoreversi
 Source: "{#Src}\ime\trio\*"; DestDir: "{app}\ime\trio"; Flags: ignoreversion recursesubdirs
 Source: "{#Src}\ime\ime_setup_elevated.ps1"; DestDir: "{app}\ime"; Flags: ignoreversion
 Source: "{#Src}\ime\install_ime.ps1"; DestDir: "{app}\ime"; Flags: ignoreversion
+Source: "{#Src}\ime\add_keyboard.ps1"; DestDir: "{app}\ime"; Flags: ignoreversion
 Source: "{#Src}\start.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Src}\stop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Src}\README.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -257,8 +258,7 @@ begin
         MsgBox('The input method could not be registered (code ' + IntToStr(ResultCode) + '). You can retry later with ime\install_ime.ps1.', mbError, MB_OK)
       else begin
         { as the normal user: start PIME''s launcher and add the profile to the keyboard list }
-        Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process ''' + ExpandConstant('{pf32}') + '\PIME\PIMELauncher.exe''; $tip=''0804:{35F67E9D-A54D-4177-9697-8B0AB71A9E04}{6B1A4C2E-7D3F-4A5B-9E8C-2F1D0A3B4C5D}''; $l=Get-WinUserLanguageList; $zh=$l | Where-Object LanguageTag -eq ''zh-Hans-CN''; if(-not $zh){$l.Add(''zh-Hans-CN''); $zh=$l | Where-Object LanguageTag -eq ''zh-Hans-CN''}; if($zh.InputMethodTips -notcontains $tip){$zh.InputMethodTips.Add($tip); Set-WinUserLanguageList $l -Force}"',
-             App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+        Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -File "' + App + '\ime\add_keyboard.ps1"', App, SW_HIDE, ewWaitUntilTerminated, ResultCode);
       end;
     end;
   end;
