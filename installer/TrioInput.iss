@@ -228,6 +228,12 @@ var
   Tmp, App: String;
   ResultCode, i: Integer;
 begin
+  if CurStep = ssInstall then begin
+    { a running Trio backend (started by the input method) would keep runtime files locked }
+    App := ExpandConstant('{app}');
+    Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match ''python'' -and $_.CommandLine -match [regex]::Escape(''' + App + ''') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep 2"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
   if CurStep = ssPostInstall then begin
     Tmp := ExpandConstant('{tmp}');
     App := ExpandConstant('{app}');
