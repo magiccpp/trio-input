@@ -14,10 +14,16 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import torch
+# keep the CUDA caching allocator from fragmenting/hoarding (must be set before torch loads)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+import torch  # noqa: E402
+
+GPU_LOCK = threading.Lock()          # one GPU job at a time: no stacked peaks
+MAX_CTX_TOKENS = int(os.environ.get("MAX_CTX_TOKENS", "64"))   # scoring context window
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 _local_model = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "llm", "models", "Qwen3-0.6B")
@@ -170,7 +176,11 @@ def score(context: str, candidates: list[str]) -> list[float]:
         context = stripped
         candidates = [ws + c for c in candidates]
     lead = tok("\n", add_special_tokens=False)["input_ids"]  # neutral start token
-    ctx_ids = lead + (tok(context, add_special_tokens=False)["input_ids"] if context else [])
+    ctx_tok = tok(context, add_special_tokens=False)["input_ids"] if context else []
+    if len(ctx_tok) > MAX_CTX_TOKENS:                          # only the recent context matters
+        ctx_tok = ctx_tok[-MAX_CTX_TOKENS:]
+        context = tok.decode(ctx_tok)
+    ctx_ids = lead + ctx_tok
     seqs, starts, cand_lens = [ctx_ids], [1], [len(ctx_ids) - 1]   # row 0 = context alone
     for c in candidates:
         full = lead + tok(context + c, add_special_tokens=False)["input_ids"]
@@ -185,15 +195,24 @@ def score(context: str, candidates: list[str]) -> list[float]:
         input_ids[i, : len(s)] = torch.tensor(s)
         attn[i, : len(s)] = 1
     input_ids, attn = input_ids.to(device), attn.to(device)
-    logits = model(input_ids=input_ids, attention_mask=attn).logits.float()
-    logp = torch.log_softmax(logits[:, :-1], dim=-1)
-    tgt = input_ids[:, 1:]
-    tok_lp = logp.gather(-1, tgt.unsqueeze(-1)).squeeze(-1)
-    totals = []
-    for i, s in enumerate(seqs):
-        start = starts[i] - 1
-        end = len(s) - 1
-        totals.append(float(tok_lp[i, start:end].sum()) if cand_lens[i] > 0 else 0.0)
+    with GPU_LOCK:
+        logits = model(input_ids=input_ids, attention_mask=attn).logits   # [B, T, V] in model dtype
+        tgt = input_ids[:, 1:]
+        totals = []
+        # per row: log p(token) = logit[token] - logsumexp(logits); float32 one row at a time
+        # so the full-vocabulary float copy never exceeds one sequence
+        for i, s in enumerate(seqs):
+            row = logits[i, :-1].float()
+            lse = torch.logsumexp(row, dim=-1)
+            tl = row.gather(-1, tgt[i].unsqueeze(-1)).squeeze(-1)
+            tok_lp = tl - lse
+            start = starts[i] - 1
+            end = len(s) - 1
+            totals.append(float(tok_lp[start:end].sum()) if cand_lens[i] > 0 else 0.0)
+            del row, lse, tl, tok_lp
+        del logits
+        if device == "cuda":
+            torch.cuda.empty_cache()          # hand cached blocks back: VRAM stays ≈ model size
     ctx_lp = totals[0]
     return [t - ctx_lp for t in totals[1:]]
 
@@ -210,8 +229,9 @@ def convert(context: str, pinyin: str, n: int = 3) -> list[str]:
     except TypeError:
         prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     ids = tok(prompt, return_tensors="pt").to(device)
-    gen = model.generate(**ids, max_new_tokens=24, do_sample=n > 1, temperature=0.7, top_p=0.9,
-                         num_return_sequences=n, pad_token_id=tok.pad_token_id)
+    with GPU_LOCK:
+        gen = model.generate(**ids, max_new_tokens=24, do_sample=n > 1, temperature=0.7, top_p=0.9,
+                             num_return_sequences=n, pad_token_id=tok.pad_token_id)
     outs = []
     for g in gen:
         text = tok.decode(g[ids["input_ids"].shape[1]:], skip_special_tokens=True)
@@ -227,9 +247,15 @@ def predict(context: str, max_new_tokens: int = 10) -> str:
     context = context[-400:].rstrip()      # a trailing space belongs to the next token
     if not context:
         return ""
-    ids = tok(context, return_tensors="pt", add_special_tokens=False).to(device)
-    gen = model.generate(**ids, max_new_tokens=max_new_tokens, do_sample=False,
-                         repetition_penalty=1.15, pad_token_id=tok.pad_token_id)
+    ids = tok(context, return_tensors="pt", add_special_tokens=False)
+    if ids["input_ids"].shape[1] > 2 * MAX_CTX_TOKENS:
+        ids = {k: v[:, -2 * MAX_CTX_TOKENS:] for k, v in ids.items()}
+    ids = {k: v.to(device) for k, v in ids.items()}
+    with GPU_LOCK:
+        gen = model.generate(**ids, max_new_tokens=max_new_tokens, do_sample=False,
+                             repetition_penalty=1.15, pad_token_id=tok.pad_token_id)
+        if device == "cuda":
+            torch.cuda.empty_cache()
     text = tok.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
     # after a mixed-language line the model sometimes starts a new paragraph first;
     # take the first non-empty line it produces
@@ -254,8 +280,13 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self._send(200, {"model": MODEL, "device": device, "device_desc": device_desc,
-                         "quant": QUANT if device == "cpu" else "none", "threads": THREADS, "mem_mb": mem_mb()})
+        info = {"model": MODEL, "device": device, "device_desc": device_desc,
+                "quant": QUANT if device == "cpu" else "none", "threads": THREADS, "mem_mb": mem_mb()}
+        if device == "cuda":
+            info["vram_mb"] = {"allocated": round(torch.cuda.memory_allocated() / 2**20),
+                               "reserved": round(torch.cuda.memory_reserved() / 2**20),
+                               "peak_reserved": round(torch.cuda.max_memory_reserved() / 2**20)}
+        self._send(200, info)
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))

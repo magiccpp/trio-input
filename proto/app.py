@@ -534,7 +534,7 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
             scored = [c for c in cands if full(c)][:10]
             rest = [c for c in cands if c not in scored]
             if len(scored) >= 2:
-                res = llm_post("/score", {"context": context[-300:], "candidates": [c["text"] for c in scored]})
+                res = llm_post("/score", {"context": context[-160:], "candidates": [c["text"] for c in scored]})
                 for c, s in zip(scored, res["scores"]):
                     c["llm"] = round(s, 2)
                     # LLM evidence + language prior + word-frequency / rime-rank prior.
