@@ -11,8 +11,11 @@ from what you pick and offers to retrain itself.
 — typed as `jintian women taolun yixia AI de neirong , and then women qu chifan . jag 'r hungrig ...`
 on a plain US keyboard layout, never touching a language switch.
 
-This is a **standalone prototype**: a local web page emulates the input method. Nothing is
-registered with Windows. (A RIME/Weasel schema version of the same idea lives in `rime/`.)
+It comes as a **real Windows input method** (Text Services Framework, via
+[PIME](https://github.com/EasyIME/PIME)): switch to *Trio Input 中/EN/SV* with Win+Space and
+type in any application. The same engine also drives a local web page
+(http://127.0.0.1:8766) that shows the language probabilities, the learning status and the
+retrain button. (A RIME/Weasel schema version of the same idea lives in `rime/`.)
 
 ## Install (Windows 10/11 x64)
 
@@ -40,6 +43,28 @@ start.ps1                                                # LLM helper + UI, open
 
 Build the installer yourself: `build\make_runtime.ps1 -Backend cpu|xpu` (portable Python +
 torch bundles) and `ISCC.exe installer\TrioInput.iss` (Inno Setup 6).
+
+## System-wide input method (PIME)
+
+`ime/trio` is the PIME module: PIME's `PIMETextService.dll` is the TSF text service that
+Windows loads into every application; it forwards keys over a pipe to PIME's Python
+server, where `trio_ime.py` runs the same key rules as the web page and asks the
+trio-input backend (`proto/app.py`, started on demand) for candidates.
+
+```powershell
+# once: PIME 1.3.0 (https://github.com/EasyIME/PIME/releases, PIME-1.3.0-stable-setup.exe /S)
+powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1        # copies the module, registers (UAC)
+powershell -ExecutionPolicy Bypass -File ime\install_ime.ps1 -Remove
+```
+
+Then add *Trio Input 中/EN/SV* under Settings → Time & Language → Language → 中文(简体) →
+Keyboards (or just Win+Space). Automated check: `ime\test_notepad.ps1` switches to Trio,
+types a mixed sentence into Notepad through the IME and prints what arrived.
+
+In the IME, keystrokes use the fast path (~10 ms); **Space** re-asks with the LLM before
+committing (~100 ms), digits pick from the shown list, **Enter** commits what you typed,
+**Tab** accepts the predicted next word. The space after a Latin word is deferred until the
+next word so Chinese and punctuation can follow without a gap.
 
 ## Using it
 

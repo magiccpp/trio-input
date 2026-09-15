@@ -542,7 +542,7 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
                     # so it gets no language prior: the LLM decides ä vs '.
                     # floor at 2%: the fast-path probabilities are not calibrated enough to
                     # veto the LLM outright (的 at -3 must beat "de" at -15)
-                    lang_prior = 0.0 if (c["source"] == "raw" and "'" in c["text"]) else LLM_PRIOR_W * math.log(max(p[c["lang"]], 0.02))
+                    lang_prior = 0.0 if ("'" in c["text"] and c["source"] in ("raw", "learned")) else LLM_PRIOR_W * math.log(max(p[c["lang"]], 0.02))
                     c["score"] = round(s + lang_prior + c.get("prior", 0.0), 2)
                 scored.sort(key=lambda c: -c["score"])
                 cands = scored + rest

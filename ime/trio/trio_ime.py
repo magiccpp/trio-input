@@ -77,12 +77,24 @@ class TrioTextService(TextService):
         self.seq = 0
         self.backend_checked = 0.0
         self.autospace = True
+        self.commit_buf = u""
+        self.pending_space = False
 
     # ------------------------------------------------------------------ lifecycle
+    def log(self, *a):
+        try:
+            with open(os.path.join(os.environ.get("TEMP", "."), "trio_ime.log"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + "\n")
+        except Exception:
+            pass
+
     def onActivate(self):
         TextService.onActivate(self)
         self.setSelKeys("123456789")
         self.customizeUI(candFontSize=16, candPerRow=9, candUseCursor=True)
+        self.setKeyboardOpen(True)          # PIME profiles start "closed" (pass-through) otherwise
+        self.keyboardOpen = True
+        self.log("activate")
         self.ensure_backend()
 
     def onDeactivate(self):
@@ -152,30 +164,37 @@ class TrioTextService(TextService):
             pass
 
     def commit_text(self, s):
-        self.setCommitString(s)
+        # several commits can happen in one key event (finish a word + punctuation): PIME
+        # sends one commitString per reply, so accumulate instead of overwriting
+        self.commit_buf += s
+        self.setCommitString(self.commit_buf)
         self.text = (self.text + s)[-1000:]
+
+    # The space after a Latin word is deferred: committed text cannot be taken back, and
+    # the next thing may be Chinese (no space) or punctuation (no space before it).
+    def flush_space(self, before_text):
+        """emit the pending space if the text that follows wants one"""
+        if self.pending_space:
+            self.pending_space = False
+            if before_text and not CJK.search(before_text[:1]) and before_text[:1] not in u",.?!:;)，。？！：；）":
+                self.commit_text(u" ")
 
     def commit(self, index):
         ctx_before = self.text
         if self.verbatim:
-            self.commit_text(self.raw + (u" " if self.autospace else u""))
-            self.auto_spaced = self.autospace
+            self.flush_space(self.raw)
+            self.commit_text(self.raw)
+            self.pending_space = self.autospace
         elif 0 <= index < len(self.cands):
             c = self.cands[index]
-            out = c["text"]
-            if c.get("lang") == "zh" and self.auto_spaced and self.text.endswith(u" "):
-                # Chinese follows Latin without the automatic space: we cannot delete
-                # committed text, so we simply do not add another space afterwards
-                pass
-            if c.get("lang") != "zh" and self.autospace:
-                out += u" "
-                self.auto_spaced = True
-            else:
-                self.auto_spaced = False
-            self.commit_text(out)
+            self.flush_space(c["text"])
+            self.commit_text(c["text"])
+            self.pending_space = self.autospace and c.get("lang") != "zh"
             self.learn(c, index, ctx_before)
         else:
-            self.commit_text(self.raw + (u" " if self.autospace else u""))
+            self.flush_space(self.raw)
+            self.commit_text(self.raw)
+            self.pending_space = self.autospace
         self.reset_comp()
         self.predict()
 
@@ -191,12 +210,12 @@ class TrioTextService(TextService):
         if not self.ghost:
             return False
         u = self.ghost.pop(0)
+        self.pending_space = False
         if re.match(u"^[A-Za-z\u00c5\u00c4\u00d6\u00e5\u00e4\u00f6]", u) and re.search(u"[A-Za-z\u00c5\u00c4\u00d6\u00e5\u00e4\u00f60-9]$", self.text):
             u = u" " + u
         if u.startswith(u" ") and (self.text == u"" or self.text.endswith(u" ") or CJK.search(self.text[-1:])):
             u = u.lstrip()
         self.commit_text(u)
-        self.auto_spaced = False
         if not self.ghost:
             self.predict()
         return True
@@ -206,16 +225,25 @@ class TrioTextService(TextService):
     def _down(keyEvent, vk):
         return bool(keyEvent.keyStates[vk] & 0x80)
 
+    MODIFIERS = (VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN, VK_CAPITAL, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5)
+
     def filterKeyDown(self, keyEvent):
+        self.log("filterKeyDown kc=%s ch=%s open=%s comp=%r" % (keyEvent.keyCode, keyEvent.charCode, self.keyboardOpen, self.comp))
         if not self.keyboardOpen:
             return False
+        kc, ch = keyEvent.keyCode, keyEvent.charCode
+        if kc in self.MODIFIERS:
+            return False                         # a modifier press never ends a composition
         if self._down(keyEvent, VK_CONTROL) or self._down(keyEvent, VK_MENU) or self._down(keyEvent, VK_LWIN) or self._down(keyEvent, VK_RWIN):
             return False
-        kc, ch = keyEvent.keyCode, keyEvent.charCode
         if self.isComposing():
             return True                          # every key is ours while composing
-        if kc in (VK_SPACE, VK_RETURN, VK_ESCAPE, VK_BACK, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SHIFT, VK_CAPITAL):
-            return kc == VK_TAB                  # let the app have them when idle (Tab handled below)
+        if kc in (VK_RETURN, VK_ESCAPE, VK_BACK, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT):
+            self.pending_space = False           # the app handles these; a deferred space is dropped
+            self.ghost = []
+            return False
+        if kc == VK_SPACE:
+            return True                          # idle Space: we emit exactly one space (see onKeyDown)
         if kc == VK_TAB:
             return bool(self.ghost)
         if 32 < ch < 127:
@@ -226,6 +254,9 @@ class TrioTextService(TextService):
     def onKeyDown(self, keyEvent):
         kc, ch = keyEvent.keyCode, keyEvent.charCode
         c = chr(ch) if 0 < ch < 0x110000 else u""
+        self.commit_buf = u""
+        if kc in self.MODIFIERS:
+            return False
 
         if kc == VK_TAB:
             if self.comp:
@@ -253,9 +284,12 @@ class TrioTextService(TextService):
             return False
         if kc == VK_RETURN:
             if self.comp:
-                self.commit_text(self.raw + (u" " if self.autospace and not self.verbatim else u""))
+                self.flush_space(self.raw)
+                self.commit_text(self.raw)
+                self.pending_space = self.autospace
                 self.reset_comp()
                 return True
+            self.pending_space = False           # the app inserts the newline
             return False
         if kc == VK_SPACE:
             if self.comp:
@@ -263,7 +297,10 @@ class TrioTextService(TextService):
                     self.refresh(use_llm=True)      # the LLM's verdict for the commit
                 self.commit(self.sel)
                 return True
-            return False
+            # idle Space: a literal space (this also flushes any deferred one as a single space)
+            self.pending_space = False
+            self.commit_text(u" ")
+            return True
         if kc in (VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN) and self.cands:
             n = min(9, len(self.cands))
             self.sel = (self.sel + (1 if kc in (VK_RIGHT, VK_DOWN) else -1)) % n
@@ -297,15 +334,24 @@ class TrioTextService(TextService):
                 if not self.verbatim:
                     self.refresh(use_llm=True)
                 self.commit(self.sel)
+            self.pending_space = False           # no space before punctuation
             last = self.text.rstrip()[-1:]
             if CJK.search(last):
                 self.commit_text(FULL[c])
             else:
                 self.commit_text(c)
+                self.pending_space = self.autospace   # "care, I" — a space after Latin punctuation
             return True
-        if self.comp:
+        if self.comp and c and 32 < ch < 127:
             # any other printable key ends the composition and is passed through as typed
             self.commit(self.sel)
+            self.pending_space = False
+            self.commit_text(c)
+            return True
+        if self.comp:
+            return True                          # unknown non-printable key while composing: swallow
+        if c and 32 < ch < 127:
+            self.flush_space(c)                  # digits, brackets etc. typed after a word
             self.commit_text(c)
             return True
         return False

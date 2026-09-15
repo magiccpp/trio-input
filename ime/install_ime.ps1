@@ -16,12 +16,12 @@ Get-Process PIMELauncher -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 & regsvr32 /s '$pime\x86\PIMETextService.dll'
 & regsvr32 /s '$pime\x64\PIMETextService.dll'
-# start the launcher detached (Start-Process -Wait in the caller would otherwise wait for it)
-cmd /c start "" "$pime\PIMELauncher.exe"
 "@
 $tmp = Join-Path $env:TEMP 'trio-ime-install.ps1'
 Set-Content $tmp $script -Encoding UTF8
 $p = Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmp`"" -Verb RunAs -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "elevated step failed ($($p.ExitCode))" }
+# the launcher runs as the normal user (it is what the TSF DLL connects to); start it unelevated
+if (-not $Remove) { Start-Process "$pime\PIMELauncher.exe" }
 if ($Remove) { Write-Host "Trio Input removed from PIME." }
 else { Write-Host "Trio Input installed. Add it under Settings > Time & Language > Language > Chinese (Simplified) > Keyboards, or switch with Win+Space." }
