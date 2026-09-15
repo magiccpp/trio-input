@@ -139,38 +139,40 @@ begin
   else Result := 'cpu';
 end;
 
-function NextButtonClick(CurPageID: Integer): Boolean;
+{ Downloads run in PrepareToInstall so they also happen in /SILENT and /VERYSILENT installs. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   i: Integer;
   PartsFile: String;
 begin
-  Result := True;
-  if CurPageID = wpReady then begin
-    DownloadPage.Clear;
-    DownloadPage.Show;
+  Result := '';
+  if DetectedGpu = '' then begin          { silent install: the components page was never shown }
+    DetectedGpu := DetectGpu;
+    if WizardSilent and (ExpandConstant('{param:COMPONENTS|}') = '') then WizardSelectComponents(DetectedGpu);
+  end;
+  Log('Runtime backend: ' + Backend);
+  DownloadPage.Clear;
+  DownloadPage.Show;
+  try
     try
-      try
-        { the .parts manifest lists the zip parts of the runtime for this backend }
-        DownloadTemporaryFile('{#Release}/python-runtime-' + Backend + '-win64.parts', 'runtime.parts', '', @OnDownloadProgress);
-        PartsFile := ExpandConstant('{tmp}\runtime.parts');
-        if not LoadStringsFromFile(PartsFile, RuntimeParts) then RaiseException('cannot read runtime.parts');
-        for i := 0 to GetArrayLength(RuntimeParts) - 1 do
-          if Trim(RuntimeParts[i]) <> '' then
-            DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
-        DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
-        DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
-        if Backend <> 'cpu' then
-          DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
-        DownloadPage.Download;
-        Result := True;
-      except
-        if DownloadPage.AbortedByUser then Log('Aborted by user.')
-        else SuppressibleMsgBox(AddPeriod(GetExceptionMessage), mbCriticalError, MB_OK, IDOK);
-        Result := False;
-      end;
-    finally
-      DownloadPage.Hide;
+      { the .parts manifest lists the zip parts of the runtime for this backend }
+      DownloadTemporaryFile('{#Release}/python-runtime-' + Backend + '-win64.parts', 'runtime.parts', '', @OnDownloadProgress);
+      PartsFile := ExpandConstant('{tmp}\runtime.parts');
+      if not LoadStringsFromFile(PartsFile, RuntimeParts) then RaiseException('cannot read runtime.parts');
+      for i := 0 to GetArrayLength(RuntimeParts) - 1 do
+        if Trim(RuntimeParts[i]) <> '' then
+          DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
+      DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
+      DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
+      if Backend <> 'cpu' then
+        DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
+      DownloadPage.Download;
+    except
+      if DownloadPage.AbortedByUser then Result := 'Download cancelled.'
+      else Result := 'Download failed: ' + AddPeriod(GetExceptionMessage);
     end;
+  finally
+    DownloadPage.Hide;
   end;
 end;
 
