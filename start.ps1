@@ -1,5 +1,7 @@
-# Starts the LLM helper and the input UI, then opens the browser.
+# Starts the LLM helper and the input backend, then opens the browser page (unless -NoBrowser:
+# the system-wide IME only needs the backend).
 # Uses the bundled runtime (installer) if present, else the dev venvs (install.ps1).
+param([switch]$NoBrowser)
 $root = $PSScriptRoot
 $rt = Join-Path $root 'runtime\python.exe'
 if (Test-Path $rt) { $py = $rt; $llmpy = $rt }
@@ -16,4 +18,4 @@ if (-not ($running | Where-Object { $_.CommandLine -match 'app\.py' })) {
     Start-Process $py -ArgumentList (Join-Path $root 'proto\app.py') -WindowStyle Hidden -WorkingDirectory $root
     Start-Sleep -Seconds 3
 }
-Start-Process 'http://127.0.0.1:8766'
+if (-not $NoBrowser) { Start-Process 'http://127.0.0.1:8766' }

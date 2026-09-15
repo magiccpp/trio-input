@@ -1,0 +1,11 @@
+{
+    "name": "Trio Input 中/EN/SV",
+    "version": "1.1",
+    "guid": "{6B1A4C2E-7D3F-4A5B-9E8C-2F1D0A3B4C5D}",
+    "locale": "zh-Hans-CN",
+    "fallbackLocale": "zh-CN",
+    "icon": "",
+    "win8_icon": "",
+    "moduleName": "trio_ime",
+    "serviceName": "TrioTextService"
+}
