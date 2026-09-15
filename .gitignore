@@ -18,6 +18,13 @@ proto/data/
 llm/pip_torch.log
 *.log
 
+# installer build outputs
+build/runtime-*/
+build/dist/
+build/*.zip
+build/get-pip.py
+runtime/
+
 # scratch
 llm/mem_probe*.py
 .claude/

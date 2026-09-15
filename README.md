@@ -14,24 +14,30 @@ on a plain US keyboard layout, never touching a language switch.
 This is a **standalone prototype**: a local web page emulates the input method. Nothing is
 registered with Windows. (A RIME/Weasel schema version of the same idea lives in `rime/`.)
 
-## Install (Windows 10/11 x64) — release v1.0.0
+## Install (Windows 10/11 x64)
+
+**Easiest**: download `TrioInput-Setup-1.0.1.exe` from the
+[latest release](https://github.com/magiccpp/trio-input/releases/latest) and run it.
+No git, no Python, no admin rights. The setup installs into `%LOCALAPPDATA%\TrioInput`,
+downloads the Python runtime and the language model (≈1.7 GB, CPU) during installation,
+and creates **Trio Input** in the Start Menu (optionally on the desktop / at login).
+Choose the *Intel GPU* runtime on the components page if you have an Arc or Core Ultra
+iGPU (+1.5 GB). Start Trio Input → the input page opens at http://127.0.0.1:8766.
+Uninstall from Windows Settings → Apps.
+
+Requirements: Windows 10/11 x64, ~4 GB disk, ~2.5 GB free RAM, internet during install only.
+
+**From source** (developers, or NVIDIA GPU):
 
 ```powershell
 git clone https://github.com/magiccpp/trio-input.git
 cd trio-input
-powershell -ExecutionPolicy Bypass -File install.ps1      # add -Backend cpu to force CPU
+powershell -ExecutionPolicy Bypass -File install.ps1      # picks CUDA / XPU / CPU torch, downloads the model
+start.ps1                                                # LLM helper + UI, opens the browser
 ```
 
-The installer sets up `uv`, two Python 3.12 environments, the PyTorch build matching your
-GPU (NVIDIA → CUDA, Intel → XPU, otherwise CPU), downloads the model files from the
-[release](https://github.com/magiccpp/trio-input/releases) (≈1.2 GB for CPU, +1.5 GB for GPU)
-and puts a **Trio Input** shortcut on the desktop. Then:
-
-```powershell
-start.ps1        # starts the LLM helper + UI and opens http://127.0.0.1:8766
-```
-
-Requirements: Windows x64, ~4 GB disk, ~2.5 GB free RAM (CPU mode), internet for the install only.
+Build the installer yourself: `build\make_runtime.ps1 -Backend cpu|xpu` (portable Python +
+torch bundles) and `ISCC.exe installer\TrioInput.iss` (Inno Setup 6).
 
 ## Using it
 
