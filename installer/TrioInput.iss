@@ -1,6 +1,6 @@
 ; Inno Setup script for Trio Input (build with: ISCC.exe installer\TrioInput.iss)
-; The setup contains the app; the Python runtime and the model are downloaded from the
-; GitHub release during installation (they are too large for a single installer).
+; The setup contains the app; the Python runtime (matching the detected GPU) and the model
+; are downloaded from the GitHub release during installation.
 #define AppName "Trio Input"
 #define AppVersion "1.0.1"
 #define AppPublisher "magiccpp"
@@ -38,8 +38,10 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Name: "autostart"; Description: "Start Trio Input when I log in"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Components]
-Name: "cpu"; Description: "CPU runtime (works everywhere, ~2 GB RAM)"; Types: full compact custom; Flags: exclusive
-Name: "xpu"; Description: "Intel GPU / iGPU runtime (Arc, Core Ultra; needs a recent Intel graphics driver)"; Types: custom; Flags: exclusive
+; the detected hardware pre-selects one of these (see InitializeWizard)
+Name: "cpu";  Description: "CPU runtime — works everywhere (~2 GB RAM, download ~1.7 GB)";                       Types: full compact custom; Flags: exclusive
+Name: "xpu";  Description: "Intel GPU / iGPU runtime — Arc, Core Ultra (needs a recent Intel driver, ~3.2 GB)"; Types: custom; Flags: exclusive
+Name: "cuda"; Description: "NVIDIA GPU runtime — CUDA 12 (needs a recent NVIDIA driver, ~4.5 GB)";              Types: custom; Flags: exclusive
 
 [Files]
 Source: "{#Src}\proto\*"; DestDir: "{app}\proto"; Excludes: "data\*,__pycache__\*,*.log,probe_*.py,test_*.py,eval_*.py"; Flags: ignoreversion recursesubdirs
@@ -86,6 +88,8 @@ Type: files; Name: "{app}\engine\user\user.yaml"
 [Code]
 var
   DownloadPage: TDownloadWizardPage;
+  DetectedGpu: String;
+  RuntimeParts: TArrayOfString;
 
 function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
 begin
@@ -93,30 +97,70 @@ begin
   Result := True;
 end;
 
+{ ---- GPU detection: NVIDIA -> cuda, Intel Arc/Iris/Graphics -> xpu, else cpu ---- }
+function DetectGpu: String;
+var
+  ResultCode: Integer;
+  Raw: AnsiString;
+  Names, TmpFile: String;
+begin
+  Result := 'cpu';
+  TmpFile := ExpandConstant('{tmp}\gpus.txt');
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ''|'' | Out-File -Encoding ascii ''' + TmpFile + '''"',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and LoadStringFromFile(TmpFile, Raw) then begin
+    Names := Uppercase(String(Raw));
+    Log('Video controllers: ' + Names);
+    if Pos('NVIDIA', Names) > 0 then Result := 'cuda'
+    else if (Pos('INTEL', Names) > 0) and
+            ((Pos('ARC', Names) > 0) or (Pos('IRIS', Names) > 0) or (Pos('GRAPHICS', Names) > 0)) then Result := 'xpu';
+  end;
+  Log('Detected GPU class: ' + Result);
+end;
+
 procedure InitializeWizard;
 begin
   DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), @OnDownloadProgress);
 end;
 
-function RuntimeName: String;
+procedure CurPageChanged(CurPageID: Integer);
 begin
-  if WizardIsComponentSelected('xpu') then Result := 'python-runtime-xpu-win64.zip'
-  else Result := 'python-runtime-cpu-win64.zip';
+  if (CurPageID = wpSelectComponents) and (DetectedGpu = '') then begin
+    DetectedGpu := DetectGpu;
+    WizardSelectComponents(DetectedGpu);
+    if DetectedGpu = 'cuda' then WizardForm.ComponentsList.Hint := 'NVIDIA GPU detected'
+    else if DetectedGpu = 'xpu' then WizardForm.ComponentsList.Hint := 'Intel GPU detected';
+  end;
+end;
+
+function Backend: String;
+begin
+  if WizardIsComponentSelected('cuda') then Result := 'cuda'
+  else if WizardIsComponentSelected('xpu') then Result := 'xpu'
+  else Result := 'cpu';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  i: Integer;
+  PartsFile: String;
 begin
   Result := True;
   if CurPageID = wpReady then begin
     DownloadPage.Clear;
-    DownloadPage.Add('{#Release}/' + RuntimeName, 'runtime.zip', '');
-    DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
-    DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
-    if WizardIsComponentSelected('xpu') then
-      DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
     DownloadPage.Show;
     try
       try
+        { the .parts manifest lists the zip parts of the runtime for this backend }
+        DownloadTemporaryFile('{#Release}/python-runtime-' + Backend + '-win64.parts', 'runtime.parts', '', @OnDownloadProgress);
+        PartsFile := ExpandConstant('{tmp}\runtime.parts');
+        if not LoadStringsFromFile(PartsFile, RuntimeParts) then RaiseException('cannot read runtime.parts');
+        for i := 0 to GetArrayLength(RuntimeParts) - 1 do
+          if Trim(RuntimeParts[i]) <> '' then
+            DownloadPage.Add('{#Release}/' + Trim(RuntimeParts[i]), Format('runtime%d.zip', [i]), '');
+        DownloadPage.Add('{#Release}/Qwen3-0.6B-tokenizer.zip', 'tokenizer.zip', '');
+        DownloadPage.Add('{#Release}/Qwen3-0.6B-int8.pt', 'Qwen3-0.6B-int8.pt', '');
+        if Backend <> 'cpu' then
+          DownloadPage.Add('{#Release}/model.safetensors', 'model.safetensors', '');
         DownloadPage.Download;
         Result := True;
       except
@@ -144,13 +188,15 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Tmp, App: String;
-  ResultCode: Integer;
+  ResultCode, i: Integer;
 begin
   if CurStep = ssPostInstall then begin
     Tmp := ExpandConstant('{tmp}');
     App := ExpandConstant('{app}');
-    WizardForm.StatusLabel.Caption := 'Unpacking the Python runtime (this takes a minute) ...';
-    Unpack(Tmp + '\runtime.zip', App + '\runtime');
+    for i := 0 to GetArrayLength(RuntimeParts) - 1 do begin
+      WizardForm.StatusLabel.Caption := Format('Unpacking the Python runtime (part %d of %d) ...', [i + 1, GetArrayLength(RuntimeParts)]);
+      if FileExists(Tmp + Format('\runtime%d.zip', [i])) then Unpack(Tmp + Format('\runtime%d.zip', [i]), App + '\runtime');
+    end;
     WizardForm.StatusLabel.Caption := 'Installing the language model ...';
     Unpack(Tmp + '\tokenizer.zip', App + '\llm\models\Qwen3-0.6B');
     FileCopy(Tmp + '\Qwen3-0.6B-int8.pt', App + '\llm\models\Qwen3-0.6B-int8.pt', False);
