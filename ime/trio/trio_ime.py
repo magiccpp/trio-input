@@ -170,31 +170,24 @@ class TrioTextService(TextService):
         self.setCommitString(self.commit_buf)
         self.text = (self.text + s)[-1000:]
 
-    # The space after a Latin word is deferred: committed text cannot be taken back, and
-    # the next thing may be Chinese (no space) or punctuation (no space before it).
+    # Space semantics: for Chinese, Space only selects (no space in the text); for English /
+    # Swedish, Space selects AND puts a real space in the text immediately. A word finished by
+    # a punctuation key gets no space ("care." / "hungrig,").
     def flush_space(self, before_text):
-        """emit the pending space if the text that follows wants one"""
-        if self.pending_space:
-            self.pending_space = False
-            if before_text and not CJK.search(before_text[:1]) and before_text[:1] not in u",.?!:;)，。？！：；）":
-                self.commit_text(u" ")
+        self.pending_space = False           # kept for compatibility: spaces are never deferred now
 
-    def commit(self, index):
+    def commit(self, index, add_space=True):
         ctx_before = self.text
+        space = u" " if (add_space and self.autospace) else u""
         if self.verbatim:
-            self.flush_space(self.raw)
-            self.commit_text(self.raw)
-            self.pending_space = self.autospace
+            self.commit_text(self.raw + space)
         elif 0 <= index < len(self.cands):
             c = self.cands[index]
-            self.flush_space(c["text"])
-            self.commit_text(c["text"])
-            self.pending_space = self.autospace and c.get("lang") != "zh"
+            self.commit_text(c["text"] + (space if c.get("lang") != "zh" else u""))
             self.learn(c, index, ctx_before)
         else:
-            self.flush_space(self.raw)
-            self.commit_text(self.raw)
-            self.pending_space = self.autospace
+            self.commit_text(self.raw + space)
+        self.pending_space = False
         self.reset_comp()
         self.predict()
 
@@ -284,9 +277,7 @@ class TrioTextService(TextService):
             return False
         if kc == VK_RETURN:
             if self.comp:
-                self.flush_space(self.raw)
-                self.commit_text(self.raw)
-                self.pending_space = self.autospace
+                self.commit_text(self.raw + (u" " if self.autospace else u""))   # Enter = what you typed, as a word
                 self.reset_comp()
                 return True
             self.pending_space = False           # the app inserts the newline
@@ -333,19 +324,13 @@ class TrioTextService(TextService):
             if self.comp:
                 if not self.verbatim:
                     self.refresh(use_llm=True)
-                self.commit(self.sel)
-            self.pending_space = False           # no space before punctuation
+                self.commit(self.sel, add_space=False)   # no space between the word and its punctuation
             last = self.text.rstrip()[-1:]
-            if CJK.search(last):
-                self.commit_text(FULL[c])
-            else:
-                self.commit_text(c)
-                self.pending_space = self.autospace   # "care, I" — a space after Latin punctuation
+            self.commit_text(FULL[c] if CJK.search(last) else c)
             return True
         if self.comp and c and 32 < ch < 127:
             # any other printable key ends the composition and is passed through as typed
-            self.commit(self.sel)
-            self.pending_space = False
+            self.commit(self.sel, add_space=False)
             self.commit_text(c)
             return True
         if self.comp:
