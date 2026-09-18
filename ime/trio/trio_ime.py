@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -79,6 +80,9 @@ class TrioTextService(TextService):
         self.autospace = True
         self.commit_buf = u""
         self.pending_space = False
+        self.llm_result = (None, [], None)
+        self.llm_done = None
+        self.llm_missed = False
 
     # ------------------------------------------------------------------ lifecycle
     def log(self, *a):
@@ -122,6 +126,7 @@ class TrioTextService(TextService):
         self.sel = 0
         self.verbatim = False
         self.sv_hint = False
+        self.llm_missed = False
         self.setCompositionString(u"")
         self.setCompositionCursor(0)
         self.setCandidateList([])
@@ -153,15 +158,56 @@ class TrioTextService(TextService):
             self.ensure_backend()
             self.cands = [{"text": self.raw, "lang": "en", "source": "raw"}]
         self.sel = 0
+        if not use_llm:
+            self.kick_llm()
+
+    # The LLM verdict is computed in the background while the user is still typing, so that
+    # Space never waits for the model (a key event must return quickly or the app stalls).
+    def kick_llm(self):
+        self.seq += 1
+        key = (self.comp, self.raw, self.text)
+        payload = {"input": self.comp, "raw": self.raw, "context": self.text[-300:], "sv_hint": self.sv_hint,
+                   "seq": self.seq, "sid": self.sid, "use_llm": True}
+        done = threading.Event()
+
+        def work():
+            try:
+                j = _post("/compose", payload, timeout=3.0)
+                if j.get("candidates") and not j.get("stale"):
+                    self.llm_result = (key, j["candidates"], j.get("primary"))
+            except Exception:
+                pass
+            done.set()
+
+        self.llm_done = done
+        threading.Thread(target=work, daemon=True).start()
+
+    def use_llm_result(self, wait=0.25):
+        key = (self.comp, self.raw, self.text)
+        if self.llm_result[0] != key and self.llm_done is not None:
+            self.llm_done.wait(wait)
+        self.llm_missed = self.llm_result[0] != key
+        if not self.llm_missed:
+            self.cands, self.last_primary = self.llm_result[1], self.llm_result[2]
+            self.sel = 0
+        # a word that *starts* with ' ; [ is never meant literally when a real ä/ö/å word exists
+        if len(self.cands) > 1 and self.cands[0]["text"] == self.raw and self.raw[:1] in NORDIC:
+            self.cands[0], self.cands[1] = self.cands[1], self.cands[0]
 
     def learn(self, cand, index, ctx_before):
-        try:
-            _post("/select", {"text": cand["text"], "lang": cand.get("lang"), "index": index, "source": cand.get("source"),
-                              "input": self.comp, "raw": self.raw, "context": ctx_before[-200:],
-                              "primary": getattr(self, "last_primary", None),
-                              "shown": [c["text"] for c in self.cands[:5]]}, timeout=0.5)
-        except Exception:
-            pass
+        if index == 0 and self.llm_missed:
+            return                               # an unchecked default teaches nothing
+        payload = {"text": cand["text"], "lang": cand.get("lang"), "index": index, "source": cand.get("source"),
+                   "input": self.comp, "raw": self.raw, "context": ctx_before[-200:],
+                   "primary": getattr(self, "last_primary", None),
+                   "shown": [c["text"] for c in self.cands[:5]]}
+
+        def work():
+            try:
+                _post("/select", payload, timeout=2.0)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
 
     def commit_text(self, s):
         # several commits can happen in one key event (finish a word + punctuation): PIME
@@ -193,11 +239,18 @@ class TrioTextService(TextService):
 
     def predict(self):
         self.ghost = []
-        try:
-            j = _post("/predict", {"context": self.text[-400:], "seq": self.seq, "sid": self.sid}, timeout=2.5)
-            self.ghost = j.get("units", [])
-        except Exception:
-            pass
+        self.seq += 1
+        snapshot = self.text
+        payload = {"context": self.text[-400:], "seq": self.seq, "sid": self.sid}
+
+        def work():
+            try:
+                j = _post("/predict", payload, timeout=4.0)
+                if self.text == snapshot and not self.comp:
+                    self.ghost = j.get("units", [])
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
 
     def accept_ghost(self):
         if not self.ghost:
@@ -284,8 +337,8 @@ class TrioTextService(TextService):
             return False
         if kc == VK_SPACE:
             if self.comp:
-                if not self.verbatim:
-                    self.refresh(use_llm=True)      # the LLM's verdict for the commit
+                if not self.verbatim and self.sel == 0:
+                    self.use_llm_result()           # the LLM's verdict, computed while typing
                 self.commit(self.sel)
                 return True
             # idle Space: a literal space (this also flushes any deferred one as a single space)
@@ -322,8 +375,8 @@ class TrioTextService(TextService):
             return True
         if c in FULL:
             if self.comp:
-                if not self.verbatim:
-                    self.refresh(use_llm=True)
+                if not self.verbatim and self.sel == 0:
+                    self.use_llm_result()
                 self.commit(self.sel, add_space=False)   # no space between the word and its punctuation
             last = self.text.rstrip()[-1:]
             self.commit_text(FULL[c] if CJK.search(last) else c)
