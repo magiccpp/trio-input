@@ -352,6 +352,63 @@ def _is_stale(table: dict, sid: str, req_seq: int | None) -> bool:
     return req_seq < table[sid]
 
 
+try:
+    TRUECASE: dict[str, dict] = json.loads((HERE / "truecase.json").read_text(encoding="utf-8"))
+except Exception:
+    TRUECASE = {"en": {}, "any": {}}
+# a sentence starts after . ! ? followed by a space, or after Chinese full-stop punctuation.
+# An EMPTY context is not a sentence start: it is just as likely a search box or a terminal.
+SENT_START = re.compile(r"(?:[.!?][\"')\]]?\s+|[。！？]\s*|\n\s*\n)$")
+
+
+def apply_case(cands: list[dict], context: str, p: dict, typed: str = "") -> list[dict]:
+    """Truecasing: I / I'm, Monday, NVIDIA, and a capital letter at the start of a sentence.
+    The lowercase spelling stays available right behind the word it replaced."""
+    start = bool(SENT_START.search(context))
+    out, seen = [], set()
+
+    def push(c):
+        if c["text"] not in seen:
+            seen.add(c["text"])
+            out.append(c)
+
+    # a known name (nvidia, github) is a dictionary word even though the frequency lists
+    # don't have it: it goes first instead of a spelling "fix" (India) or a pinyin reading
+    if (len(typed) >= 4 and typed in TRUECASE["any"] and not (cands and cands[0]["source"] == "learned")
+            and not any(c["lang"] == "zh" and pinyin_of(c["text"]) == typed for c in cands[:6])):     # beijing -> 北京 stays
+        cands = [c for c in cands if c["text"] != typed]
+        cands.insert(0, {"text": typed, "lang": "en" if p.get("en", 0) >= p.get("sv", 0) else "sv", "source": "dict", "prior": 0.0})
+
+    for c in cands:
+        t = c["text"]
+        if c["lang"] == "zh" or t != t.lower():
+            push(c)
+            continue
+        cased = None
+        if c["source"] != "learned":             # the user's own spelling of a name wins
+            cased = TRUECASE["any"].get(t) or (TRUECASE["en"].get(t) if c["lang"] == "en" else None)
+        # "i" is a word in both languages: Swedish keeps it, English capitalises it; offer both
+        alt = None
+        if cased is None and c["lang"] == "sv" and t in TRUECASE["en"] and p.get("en", 0) >= 0.02:
+            alt = dict(c, text=TRUECASE["en"][t], lang="en", source="dict")
+        new = cased or t
+        if start and new[:1].islower() and new == t:
+            new = t[:1].upper() + t[1:]
+        if new != t:
+            push(dict(c, text=new))
+            if out[-1]["text"] == new and len(out) == 1 and not cased:
+                push(dict(c, prior=c.get("prior", 0.0) - 2.0))   # lowercase stays reachable as #2
+            elif cased and c["lang"] == "en" and t in TRUECASE["en"] and p.get("sv", 0) >= 0.02 and t in SV:
+                push(dict(c, lang="sv"))
+        else:
+            push(c)
+        if alt:
+            if start:
+                alt["text"] = alt["text"][:1].upper() + alt["text"][1:]
+            push(alt)
+    return out
+
+
 def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "", req_seq: int | None = None,
             sid: str = "-") -> dict:
     t0 = time.perf_counter()
@@ -505,6 +562,8 @@ def compose(inp: str, context: str, sv_hint: bool, use_llm: bool, raw: str = "",
             if is_exact(c) and p[c["lang"]] >= 0.15:
                 cands.insert(0, cands.pop(i))
                 break
+
+    cands = apply_case(cands, context, p, inp)
 
     fast_ms = (time.perf_counter() - t0) * 1000
     llm_ms, llm_used, llm_conv = 0.0, False, []

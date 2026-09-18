@@ -122,6 +122,23 @@ if device == "cuda":
 print("ready", flush=True)
 
 
+def _accel():
+    """torch.cuda / torch.xpu share the same memory API; None on CPU."""
+    return {"cuda": torch.cuda, "xpu": getattr(torch, "xpu", None)}.get(device)
+
+
+def free_cache():
+    # The caching allocator never returns blocks on its own. On an NVIDIA card that hoards
+    # VRAM; on an Intel iGPU it hoards *shared system memory*, which is worse.
+    acc = _accel()
+    if acc is not None and os.environ.get("FREE_CACHE", "1") == "1":    # FREE_CACHE=0: A/B measurement only
+        try:
+            acc.synchronize()
+            acc.empty_cache()
+        except Exception:
+            pass
+
+
 def mem_mb() -> dict:
     """Process memory. Linux: RSS split into anonymous (heap) and file-backed (cache)
     pages; Windows: working set + private bytes via psapi."""
@@ -211,8 +228,7 @@ def score(context: str, candidates: list[str]) -> list[float]:
             totals.append(float(tok_lp[start:end].sum()) if cand_lens[i] > 0 else 0.0)
             del row, lse, tl, tok_lp
         del logits
-        if device == "cuda":
-            torch.cuda.empty_cache()          # hand cached blocks back: VRAM stays ≈ model size
+        free_cache()                          # hand cached blocks back: VRAM stays ≈ model size
     ctx_lp = totals[0]
     return [t - ctx_lp for t in totals[1:]]
 
@@ -254,8 +270,7 @@ def predict(context: str, max_new_tokens: int = 10) -> str:
     with GPU_LOCK:
         gen = model.generate(**ids, max_new_tokens=max_new_tokens, do_sample=False,
                              repetition_penalty=1.15, pad_token_id=tok.pad_token_id)
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        free_cache()
     text = tok.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
     # after a mixed-language line the model sometimes starts a new paragraph first;
     # take the first non-empty line it produces
@@ -282,10 +297,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         info = {"model": MODEL, "device": device, "device_desc": device_desc,
                 "quant": QUANT if device == "cpu" else "none", "threads": THREADS, "mem_mb": mem_mb()}
-        if device == "cuda":
-            info["vram_mb"] = {"allocated": round(torch.cuda.memory_allocated() / 2**20),
-                               "reserved": round(torch.cuda.memory_reserved() / 2**20),
-                               "peak_reserved": round(torch.cuda.max_memory_reserved() / 2**20)}
+        acc = _accel()
+        if acc is not None:
+            try:
+                info["vram_mb"] = {"allocated": round(acc.memory_allocated() / 2**20),
+                                   "reserved": round(acc.memory_reserved() / 2**20),
+                                   "peak_reserved": round(acc.max_memory_reserved() / 2**20)}
+            except Exception:
+                pass
         self._send(200, info)
 
     def do_POST(self):
